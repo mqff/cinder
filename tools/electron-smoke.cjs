@@ -10,6 +10,7 @@ nativeTheme.themeSource = "dark";
 const errors = [];
 app.on("browser-window-created", (_event, window) => {
   window.webContents.setBackgroundThrottling(false);
+  window.webContents.setZoomFactor(Math.min(1, window.getContentSize()[0] / 1280));
   let quota = require("../test/limits-fixture.cjs").limitsFixture();
   const resetRequests = [];
   let delayedQuota = false;
@@ -541,6 +542,7 @@ app.on("browser-window-created", (_event, window) => {
       key("Escape");
       await waitFor(`!document.querySelector('dialog')`);
       window.setSize(940, 600);
+      window.webContents.setZoomFactor(1);
       await new Promise((resolve) => setTimeout(resolve, 150));
       assert.equal(
         await evaluate(

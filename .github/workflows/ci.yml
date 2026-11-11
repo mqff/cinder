@@ -23,6 +23,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+      - if: runner.os == 'Linux'
+        name: Configure Electron sandbox
+        run: |
+          node -e "require('electron')"
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - if: runner.os != 'Linux'
         run: npm run smoke
       - if: runner.os == 'Linux'
