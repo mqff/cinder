@@ -80,10 +80,10 @@ app.on("browser-window-created", (_event, window) => {
       await waitFor(`!document.querySelector('.choice-popup')`);
     }
     try {
-      window.webContents.setZoomFactor(Math.min(1, window.getContentSize()[0] / 1280));
-      await waitFor(`innerWidth >= 1200`);
       await waitFor(`document.querySelector('.stats-grid') && !document.querySelector('.scan-progress')`);
       await waitFor(`document.querySelector('.brand-mark')?.naturalWidth > 0`);
+      window.webContents.setZoomFactor(0.75);
+      await waitFor(`innerWidth >= 1200`);
       const probe = "cinder-smoke-console-probe";
       const observedProbe = new Promise((resolve) => {
         const listener = (event) => {
@@ -354,7 +354,15 @@ app.on("browser-window-created", (_event, window) => {
             }
             return [...columns.values()].map(rows => rows.sort((a, b) => a.top - b.top));
           })()`);
-          assert.equal(cardColumns.length, 2);
+          assert.equal(
+            cardColumns.length,
+            2,
+            JSON.stringify(
+              await evaluate(
+                `({ width: innerWidth, columns: getComputedStyle(document.querySelector('.limits-grid')).columnCount })`
+              )
+            )
+          );
           for (const rows of cardColumns)
             for (let index = 1; index < rows.length; index++) {
               const gap = rows[index].top - rows[index - 1].bottom;
