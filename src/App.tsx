@@ -1,237 +1,386 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { SnapshotInfo } from "@/lib/types";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { ICON } from "@/lib/icons";
-import { cn } from "@/lib/utils";
-import { filterPeriod, summarize } from "@/lib/aggregate";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { DesktopChrome } from "@/components/DesktopChrome";
+import { AppDialog } from "@/components/AppDialog";
+import { Glyph } from "@/components/Glyph";
+import { Settings } from "@/components/Settings";
+import { UsageFilters } from "@/components/UsageFilters";
+import type { Entry, UsageSelection } from "@/lib/types";
+import { Empty, Panel, Stat } from "@/components/Primitives";
+import { UsageChart } from "@/components/charts/UsageChart";
+import { useDashboard } from "@/hooks/useDashboard";
+import { usePreferences } from "@/hooks/usePreferences";
+import { daySeries, hourSeries, queryUsage, summarize } from "@/lib/aggregate";
+import { exportUsage } from "@/lib/export";
+import { fmt } from "@/lib/format";
+import { views, type ViewId } from "@/lib/navigation";
 import { readPref, writePref } from "@/lib/prefs";
-import { applyTheme, DEFAULT_THEME, paletteOf, type Mode } from "@/lib/themes";
-import { useUsage } from "@/hooks/useUsage";
-import { useCalls } from "@/hooks/useCalls";
-import { TitleBar } from "@/components/TitleBar";
-import { NavBar, VIEW_ORDER } from "@/components/NavBar";
-import { ScanGate } from "@/components/ScanGate";
 import { Overview } from "@/views/Overview";
 import { Activity } from "@/views/Activity";
-import { Calls } from "@/views/Calls";
-import { Models } from "@/views/Models";
-import { Projects } from "@/views/Projects";
-import { Providers } from "@/views/Providers";
-import { Badges } from "@/views/Badges";
+import { Breakdown } from "@/views/Breakdown";
 import { Sessions } from "@/views/Sessions";
+import { Providers } from "@/views/Providers";
+import { Calls } from "@/views/Calls";
+import { Badges } from "@/views/Badges";
+import { Limits } from "@/views/Limits";
+import { useLimits } from "@/hooks/useLimits";
+import { PricingEditor } from "@/components/PricingEditor";
+import { AppearanceSettings } from "@/components/AppearanceSettings";
+import { Commands } from "@/components/Commands";
 
-export type ViewId = "overview" | "activity" | "calls" | "models" | "projects" | "providers" | "badges" | "sessions";
-
-const PERIODS = [
-  { d: 7, label: "7D" },
-  { d: 30, label: "30D" },
-  { d: 90, label: "90D" },
-  { d: 0, label: "All" }
-];
-
-const TITLES: Record<ViewId, string> = {
-  overview: "Overview",
-  activity: "Activity",
-  calls: "Calls",
-  models: "Models",
-  projects: "Projects",
-  providers: "Providers",
-  badges: "Badges",
-  sessions: "Sessions"
-};
-
-function initialPeriod(): number {
-  const saved = Number(readPref("period"));
-  return PERIODS.some((p) => p.d === saved) ? saved : 30;
-}
+type Dialog =
+  { kind: "settings" } | { kind: "commands" } | { kind: "themes" } | { kind: "model"; model: string } | null;
+const noSelection: UsageSelection = { source: "", model: "", project: "" };
+const emptyEntries: Entry[] = [];
+const emptyQuery = { entries: emptyEntries, facets: { source: [], model: [], project: [] } };
 
 export function App() {
-  const { data, loading, progress, reload, restore, prefetch, cancel } = useUsage();
-  const { data: callsData, loading: callsLoading, reload: reloadCalls, restore: restoreCalls } = useCalls();
-  const [boot, setBoot] = useState<"checking" | "gate" | "ready">("checking");
-  const [snapshot, setSnapshot] = useState<SnapshotInfo | null>(null);
-  const [view, setView] = useState<ViewId>("overview");
-  const [period, setPeriod] = useState(initialPeriod);
-  const [themeId, setThemeId] = useState(() => readPref("theme-id") || DEFAULT_THEME);
-  const [mode, setMode] = useState<Mode>(() => (readPref("mode") === "light" ? "light" : "dark"));
-
-  const startScan = useCallback(async () => {
-    setBoot("ready");
-    setSnapshot(null);
-    await window.cinder?.clearSnapshot().catch(() => {});
-    const done = await reload();
-    if (!done) {
-      setBoot("gate");
-      return;
-    }
-    void reloadCalls();
-  }, [reload, reloadCalls]);
-
-  const openSnapshot = useCallback(async () => {
-    const ok = await restore();
-    if (!ok) {
-      void startScan();
-      return;
-    }
-    await restoreCalls();
-    setBoot("ready");
-  }, [restore, restoreCalls, startScan]);
+  const dashboard = useDashboard();
+  const preferences = usePreferences();
+  const [view, setView] = useState<ViewId>(() => views.find(([id]) => id === readPref("view"))?.[0] || "overview");
+  const [selection, setSelection] = useState(noSelection);
+  const limits = useLimits(view === "limits");
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [clock, setClock] = useState(() => new Date());
+  const now = useMemo(() => new Date(), [clock, dashboard.usage]);
+  const main = useRef<HTMLElement>(null);
+  const closeDialog = useCallback(() => setDialog(null), []);
+  const inspectModel = (model: string) => setDialog({ kind: "model", model });
+  const openCommands = () => {
+    setDialog({ kind: "commands" });
+  };
+  const refresh = useCallback(
+    () => (view === "limits" ? limits.refresh() : view === "calls" ? dashboard.refreshCalls() : dashboard.scan()),
+    [view, dashboard.refreshCalls, dashboard.scan, limits.refresh]
+  );
 
   useEffect(() => {
-    let alive = true;
-    void (async () => {
-      const info = await window.cinder?.snapshotInfo().catch(() => null);
-      if (!alive) return;
-      if (info && info.entries > 0) {
-        setSnapshot(info);
-        setBoot("gate");
-        prefetch();
-      } else {
-        void startScan();
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [startScan, prefetch]);
-
+    writePref("view", view);
+    main.current?.scrollTo(0, 0);
+  }, [view]);
   useEffect(() => {
-    if (view === "calls" && boot === "ready" && !callsData && !callsLoading) void reloadCalls();
-  }, [view, boot, callsData, callsLoading, reloadCalls]);
-
+    const timer = setInterval(() => setClock(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
-    applyTheme(themeId, mode);
-    writePref("theme-id", themeId);
-    writePref("mode", mode);
-    window.cinder?.setBackground(paletteOf(themeId, mode).bg);
-  }, [themeId, mode]);
-
+    if (!preferences.autoRefresh || dashboard.phase !== "ready") return;
+    const timer = setInterval(() => {
+      if (!document.hidden) void dashboard.scan();
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [preferences.autoRefresh, dashboard.phase, dashboard.scan]);
+  useEffect(() => window.cinder?.onMenuRescan(() => void refresh()), [refresh]);
   useEffect(() => {
-    writePref("period", String(period));
-  }, [period]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
-      if (!e.ctrlKey && !e.metaKey) return;
-      if (e.key === "r" || e.key === "R") {
-        e.preventDefault();
-        void startScan();
+    function onKey(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const modalOpen = !!document.querySelector("dialog[open]");
+      if (event.altKey && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        if (modalOpen) return;
+        if (event.shiftKey)
+          preferences.setMode(
+            preferences.mode === "system" ? "light" : preferences.mode === "light" ? "dark" : "system"
+          );
+        else setDialog({ kind: "themes" });
         return;
       }
-      const n = Number(e.key);
-      if (n >= 1 && n <= VIEW_ORDER.length) {
-        e.preventDefault();
-        setView(VIEW_ORDER[n - 1]);
+      if (event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (modalOpen && dialog?.kind !== "commands") return;
+        setDialog((current) => (current?.kind === "commands" ? null : { kind: "commands" }));
+        return;
       }
-    };
+      if ((event.target as HTMLElement).matches("input, textarea, select, [contenteditable=true]")) return;
+      if (event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        void refresh();
+      }
+      if (modalOpen) return;
+      const index = Number(event.key) - 1;
+      if (index >= 0 && index < views.length) {
+        event.preventDefault();
+        setView(views[index][0]);
+      }
+    }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [startScan]);
+  }, [refresh, dialog, preferences.mode, preferences.setMode]);
 
-  useEffect(() => {
-    return window.cinder?.onMenuRescan(() => void startScan());
-  }, [startScan]);
+  const entries = dashboard.usage?.entries;
+  const all = useMemo(() => summarize(entries || emptyEntries), [entries]);
+  const periodic = view !== "calls" && view !== "badges" && view !== "limits";
+  const query = useMemo(
+    () => (periodic ? queryUsage(entries || emptyEntries, preferences.period, selection, now) : emptyQuery),
+    [entries, periodic, preferences.period, now, selection]
+  );
+  const filtered = query.entries;
+  const sum = useMemo(() => (filtered === entries ? all : summarize(filtered)), [filtered, entries, all]);
+  const model = dialog?.kind === "model" ? dialog.model : null;
+  const modelSummary = useMemo(
+    () => summarize(model ? filtered.filter((entry) => entry.model === model) : []),
+    [filtered, model]
+  );
+  const diagnostics = [...(dashboard.usage?.diagnostics || []), ...(dashboard.calls?.diagnostics || [])];
+  const title = views.find(([id]) => id === view)![1];
+  const updatedAt =
+    view === "limits"
+      ? limits.data?.checkedAt
+      : view === "calls"
+        ? dashboard.calls?.scannedAt
+        : dashboard.usage?.scannedAt;
+  const refreshing = view === "limits" ? limits.busy : view === "calls" ? dashboard.callsBusy : dashboard.busy;
+  const error = view === "limits" ? limits.error : dashboard.error || (view === "calls" ? dashboard.callsError : "");
 
-  const entries = data?.entries ?? [];
-  const full = useMemo(() => summarize(entries), [entries]);
-  const periodic = view === "overview" || view === "activity" || view === "models" || view === "projects" || view === "sessions";
-  const periodEntries = useMemo(() => (periodic ? filterPeriod(entries, period) : entries), [entries, period, periodic]);
-  const sum = useMemo(() => (periodic ? summarize(periodEntries) : full), [periodEntries, periodic, full]);
-
-  const hasData = entries.length > 0;
+  let content: ReactNode;
+  if (view === "limits")
+    content = (
+      <Limits
+        data={limits.data}
+        busy={limits.busy}
+        now={clock.getTime()}
+        refresh={limits.refresh}
+        reset={limits.reset}
+      />
+    );
+  else if (view === "calls")
+    content = (
+      <Calls
+        calls={dashboard.calls}
+        loading={dashboard.callsBusy}
+        refresh={() => void dashboard.refreshCalls()}
+        cancel={dashboard.cancel}
+      />
+    );
+  else if (view === "badges") content = <Badges full={all} />;
+  else if ((dashboard.busy || dashboard.error) && !entries) content = null;
+  else if (!filtered.length)
+    content = (
+      <Empty title={entries?.length ? "No matching records" : "No usage found"}>
+        {entries?.length ? (
+          <button
+            className="button"
+            onClick={() => {
+              setSelection(noSelection);
+              preferences.setPeriod(0);
+            }}
+          >
+            Reset filters
+          </button>
+        ) : (
+          "Refresh after using a supported tool."
+        )}
+      </Empty>
+    );
+  else if (view === "overview") content = <Overview sum={sum} period={preferences.period} onModel={inspectModel} />;
+  else if (view === "activity")
+    content = <Activity sum={sum} full={all} entries={filtered} period={preferences.period} />;
+  else if (view === "sessions") content = <Sessions entries={filtered} />;
+  else if (view === "providers")
+    content = <Providers full={sum} entries={filtered} onLimits={() => setView("limits")} />;
+  else
+    content = (
+      <Breakdown
+        rows={view === "models" ? sum.models : sum.projects}
+        entries={filtered}
+        kind={view}
+        onModel={inspectModel}
+      />
+    );
 
   return (
-    <div className="grid h-full grid-rows-[34px_50px_1fr] overflow-hidden">
-      <TitleBar themeId={themeId} mode={mode} onTheme={setThemeId} onMode={setMode} />
-      <NavBar view={view} onView={setView} />
-
-      <main className="min-h-0 overflow-y-auto bg-background px-6 py-5 pb-10 select-text">
-        <div className="mb-[18px] flex items-center justify-between gap-4">
-          <h1 className="text-[19px] font-[620] tracking-[-0.025em]">{TITLES[view]}</h1>
-          <div className={cn("flex items-center gap-2", boot !== "ready" && "hidden")}>
-            {periodic && hasData && (
-              <div className="flex rounded-md bg-card p-[3px] ring-1 ring-foreground/10">
-                {PERIODS.map((p) => (
-                  <button
-                    key={p.d}
-                    onClick={() => setPeriod(p.d)}
-                    className={cn(
-                      "rounded-[6px] px-2.5 py-1 text-[12px] font-medium transition-colors",
-                      p.d === period ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
+    <div className="app-shell">
+      <DesktopChrome
+        view={view}
+        onView={setView}
+        onSettings={() => setDialog({ kind: "settings" })}
+        onCommands={openCommands}
+      />
+      <main ref={main} className="workspace">
+        <header className="page-heading">
+          <h1>{title}</h1>
+          <div className="page-actions">
+            {updatedAt && (
+              <time dateTime={updatedAt} title={new Date(updatedAt).toLocaleString()}>
+                Updated {new Date(updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </time>
             )}
-            <button
-              onClick={() => void startScan()}
-              disabled={loading}
-              aria-label="Rescan logs"
-              className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none"
-            >
-              <HugeiconsIcon icon={ICON.refresh} size={16} strokeWidth={1.8} className={loading ? "animate-spin" : ""} />
+            {periodic && (
+              <button className="button" disabled={!filtered.length} onClick={() => exportUsage(filtered)}>
+                Export CSV
+              </button>
+            )}
+            <button className="button refresh-button" disabled={refreshing} onClick={() => void refresh()}>
+              <Glyph name="refresh" size={14} />
+              {refreshing ? (view === "limits" ? "Checking…" : "Scanning...") : "Refresh"}
             </button>
           </div>
-        </div>
-
-        {boot !== "ready" ? (
-          boot === "gate" ? (
-            <ScanGate info={snapshot} onRestore={() => void openSnapshot()} onScan={() => void startScan()} />
-          ) : null
-        ) : loading && !data ? (
-          <div className="grid h-[62vh] place-items-center">
-            <div className="w-[320px]">
-              <div className="mb-2.5 flex items-baseline justify-between text-[12.5px] text-muted-foreground">
-                <span>
-                  {progress.label ? `Scanning ${progress.label}…` : "Scanning local usage logs…"}
-                  {progress.files ? ` · ${progress.files.toLocaleString()} files` : ""}
-                </span>
-                <span className="tnum">{progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%</span>
-              </div>
-              <div className="h-[6px] overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-[var(--brand)] transition-[width] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
-                  style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }}
-                />
-              </div>
-              <button
-                onClick={() => void cancel()}
-                className="mt-3.5 w-full rounded-xl px-4 py-2 text-[12.5px] font-medium text-muted-foreground ring-1 ring-foreground/10 transition-colors hover:bg-accent hover:text-foreground"
-              >
-                Cancel scan
+        </header>
+        {error && (
+          <div role="alert" className="notice error">
+            {error}
+            <button onClick={() => void refresh()}>Retry</button>
+          </div>
+        )}
+        {view === "limits" ? (
+          <div className="page-content">{content}</div>
+        ) : dashboard.phase === "gate" ? (
+          <div className="scan-welcome">
+            <h2>{dashboard.snapshot ? "Saved scan" : "Scan cancelled"}</h2>
+            <p>
+              {dashboard.snapshot
+                ? `${fmt.int(dashboard.snapshot.entries)} requests, ${dashboard.snapshot.sources} sources. ${new Date(dashboard.snapshot.savedAt).toLocaleString()}.`
+                : "Run a scan to load usage."}
+            </p>
+            <div className="inline-controls">
+              {dashboard.snapshot && (
+                <button className="button primary" onClick={() => void dashboard.restore()}>
+                  Open last scan
+                </button>
+              )}
+              <button className="button" onClick={() => void dashboard.scan()}>
+                New scan
               </button>
             </div>
           </div>
-        ) : !hasData ? (
-          <div className="grid h-[60vh] place-items-center text-center text-muted-foreground">
-            <div>
-              <div className="mb-1.5 text-[15px] font-semibold text-foreground">No usage data found</div>
-              {data?.error
-                ? "Error: " + data.error
-                : `Scanned ${data?.catalog?.length ?? 0} local tools. Use one, then press refresh.`}
-            </div>
-          </div>
-        ) : periodic && !periodEntries.length ? (
-          <div className="grid h-[60vh] place-items-center text-center text-muted-foreground">
-            No data in this period.
-          </div>
+        ) : dashboard.phase === "boot" ? (
+          <Empty title="Loading..." />
         ) : (
-          <div key={view} className="view-in">
-            {view === "overview" && <Overview sum={sum} period={period} />}
-            {view === "activity" && <Activity sum={sum} full={full} entries={periodEntries} period={period} />}
-            {view === "calls" && <Calls calls={callsData} />}
-            {view === "models" && <Models sum={sum} period={period} />}
-            {view === "projects" && <Projects sum={sum} period={period} />}
-            {view === "sessions" && <Sessions entries={periodEntries} />}
-            {view === "providers" && <Providers full={full} entries={entries} />}
-            {view === "badges" && <Badges full={full} />}
+          <div className="page-content">
+            {periodic && (
+              <UsageFilters
+                period={preferences.period}
+                onPeriod={preferences.setPeriod}
+                selection={selection}
+                onSelection={setSelection}
+                facets={query.facets}
+              />
+            )}
+            {dashboard.busy && (
+              <div className="scan-progress" role="status">
+                <span>{dashboard.progress.label || "Scanning"}</span>
+                <span>{fmt.int(dashboard.progress.files || 0)} files</span>
+                <progress max={dashboard.progress.total || 1} value={dashboard.progress.done} />
+                <button onClick={dashboard.cancel}>Cancel</button>
+              </div>
+            )}
+            {diagnostics.length > 0 && (
+              <details className="notice">
+                <summary>
+                  {diagnostics.length} scan {diagnostics.length === 1 ? "warning" : "warnings"}
+                </summary>
+                {diagnostics.map((item, index) => (
+                  <p key={index}>
+                    <b>{item.source}</b>: {item.message}
+                    {item.file && <code>{item.file}</code>}
+                  </p>
+                ))}
+              </details>
+            )}
+            {content}
           </div>
         )}
       </main>
+      {dialog && (
+        <AppDialog
+          key={dialog.kind === "model" ? dialog.model : dialog.kind}
+          title={
+            dialog.kind === "settings"
+              ? "Settings"
+              : dialog.kind === "commands"
+                ? "Commands"
+                : dialog.kind === "themes"
+                  ? "Appearance"
+                  : dialog.model
+          }
+          onClose={closeDialog}
+        >
+          {dialog.kind === "settings" ? (
+            <Settings
+              preferences={preferences}
+              usage={dashboard.usage}
+              busy={dashboard.busy}
+              onPricing={dashboard.savePricing}
+            />
+          ) : dialog.kind === "themes" ? (
+            <AppearanceSettings preferences={preferences} />
+          ) : dialog.kind === "commands" ? (
+            <Commands
+              onView={(id) => {
+                setView(id);
+                closeDialog();
+              }}
+              onThemes={() => setDialog({ kind: "themes" })}
+              onSettings={() => setDialog({ kind: "settings" })}
+            />
+          ) : (
+            <div className="view-stack">
+              <div className="stats-grid">
+                <Stat label="Tokens" value={fmt.compact(modelSummary.totals.tokens)} />
+                <Stat label="Cost" value={fmt.cost(modelSummary.totals)} />
+                <Stat label="Requests" value={fmt.int(modelSummary.count)} />
+                <Stat
+                  label="Cache hit rate"
+                  value={fmt.pct(
+                    modelSummary.totals.cacheRead /
+                      Math.max(
+                        1,
+                        modelSummary.totals.input + modelSummary.totals.cacheRead + modelSummary.totals.cacheWrite
+                      )
+                  )}
+                />
+              </div>
+              <UsageChart
+                points={
+                  preferences.period === 1
+                    ? hourSeries(modelSummary.byHour)
+                    : daySeries(modelSummary.byDay, preferences.period)
+                }
+                interval={preferences.period === 1 ? "hour" : "day"}
+              />
+              <p className="note">
+                Estimated cache-read savings: {fmt.usd(modelSummary.totals.cacheSavings || 0)}. Compared with fresh
+                input at catalog or custom rates; cache-write premiums are excluded.
+              </p>
+              <div className="stats-grid">
+                <Stat
+                  label="Cost / 1M tokens"
+                  value={
+                    modelSummary.totals.tokens
+                      ? fmt.usd((modelSummary.totals.cost / modelSummary.totals.tokens) * 1e6)
+                      : "Unavailable"
+                  }
+                />
+                <Stat label="Input cost" value={fmt.usd(modelSummary.costBy.input)} />
+                <Stat label="Output cost" value={fmt.usd(modelSummary.costBy.output)} />
+                <Stat
+                  label="Cache cost"
+                  value={fmt.usd(modelSummary.costBy.cacheRead + modelSummary.costBy.cacheWrite)}
+                />
+              </div>
+              <details className="model-pricing-details">
+                <summary>Edit model pricing</summary>
+                <Panel title="Price and inclusion">
+                  <PricingEditor
+                    model={dialog.model}
+                    usage={dashboard.usage}
+                    busy={dashboard.busy}
+                    onSave={dashboard.savePricing}
+                  />
+                </Panel>
+              </details>
+              <button
+                className="button"
+                onClick={() => {
+                  setSelection((current) => ({ ...current, model: dialog.model }));
+                  closeDialog();
+                  setView("sessions");
+                }}
+              >
+                Inspect sessions
+              </button>
+            </div>
+          )}
+        </AppDialog>
+      )}
     </div>
   );
 }

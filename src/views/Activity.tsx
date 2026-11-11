@@ -1,83 +1,95 @@
-import { useMemo } from "react";
-import { requestsOf, streaks } from "@/lib/aggregate";
-import { fmt } from "@/lib/format";
-import { provColor, provLabel } from "@/lib/providers";
 import type { Entry, Summary } from "@/lib/types";
-import { Panel } from "@/components/Primitives";
-import { Heatmap, HeatLegend } from "@/components/charts/Heatmap";
-import { HourlyBars } from "@/components/charts/HourlyBars";
-
-function KV({ k, v }: { k: string; v: string }) {
+import { useMemo } from "react";
+import { blank, daySeries, streaks } from "@/lib/aggregate";
+import { fmt } from "@/lib/format";
+import { sourceLabel } from "@/lib/navigation";
+import { Panel, Stat } from "@/components/Primitives";
+import { ExpandableList } from "@/components/ExpandableList";
+function MapGrid({ byDay, days }: { byDay: Summary["byDay"]; days: number }) {
+  const points = daySeries(byDay, days || 371);
+  const max = Math.max(1, ...points.map((point) => point.requests));
   return (
-    <div className="flex justify-between border-b border-border py-[7px] text-[12px] last:border-0">
-      <span className="text-muted-foreground">{k}</span>
-      <b className="font-semibold tnum">{v}</b>
+    <div className="heatmap" role="img" aria-label="Requests by day">
+      {points.map((point) => (
+        <span
+          key={point.key}
+          title={`${point.key}: ${fmt.int(point.requests)} requests`}
+          style={{
+            background: point.requests
+              ? `color-mix(in srgb, var(--brand) ${20 + (point.requests / max) * 80}%, var(--card))`
+              : "var(--muted)"
+          }}
+        />
+      ))}
     </div>
   );
 }
-
-export function Activity({ sum, full, entries, period }: { sum: Summary; full: Summary; entries: Entry[]; period: number }) {
-  const st = streaks(full.byDay);
-  let peak = 0;
-  let peakH = 0;
-  sum.byHour.forEach((h, i) => {
-    if (h.tokens > peak) {
-      peak = h.tokens;
-      peakH = i;
+export function Activity({
+  sum,
+  full,
+  entries,
+  period
+}: {
+  sum: Summary;
+  full: Summary;
+  entries: Entry[];
+  period: number;
+}) {
+  const streak = streaks(full.byDay);
+  const peak = sum.byHour.reduce((best, hour, index) => (hour.tokens > sum.byHour[best].tokens ? index : best), 0);
+  const max = Math.max(1, ...sum.byHour.map((hour) => hour.tokens));
+  const providerDays = useMemo(() => {
+    const sources = new Map<string, Summary["byDay"]>();
+    for (const entry of entries) {
+      if (!sources.has(entry.source)) sources.set(entry.source, new Map());
+      const days = sources.get(entry.source)!;
+      const key = fmt.dayKey(entry.t);
+      if (!days.has(key)) days.set(key, blank());
+      days.get(key)!.requests += entry.n ?? 1;
     }
-  });
-  const periodLabel = period ? `last ${period} days` : "all time";
-  const heatDays = period ? Math.max(period, 1) : 371;
-  const heatLabel = period ? `last ${period} days` : "last 12 months";
-
-  const bySource = useMemo(() => {
-    const map = new Map<string, Entry[]>();
-    for (const e of entries) {
-      let arr = map.get(e.source);
-      if (!arr) map.set(e.source, (arr = []));
-      arr.push(e);
-    }
-    return [...map.entries()].sort((a, b) => requestsOf(b[1]) - requestsOf(a[1]));
+    return sources;
   }, [entries]);
-
   return (
-    <div className="flex flex-col gap-3.5">
-      <Panel title="Activity map" hint={`${heatLabel} · requests per day`}>
-        <Heatmap entries={entries} days={heatDays} />
-      </Panel>
-      {bySource.length > 1 && (
-        <Panel title="By provider" hint={`${heatLabel} · requests per day`}>
-          <div className="flex flex-col gap-4">
-            {bySource.map(([src, es]) => (
-              <div key={src} className="flex items-center gap-3.5">
-                <div className="flex w-[110px] shrink-0 items-center gap-2 text-[12px]">
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: provColor(src) }} />
-                  <span className="truncate">{provLabel(src)}</span>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <Heatmap entries={es} days={heatDays} maxCell={14} showLegend={false} />
-                </div>
-                <span className="w-[52px] shrink-0 text-right text-[11.5px] text-muted-foreground tnum">
-                  {fmt.compact(requestsOf(es))}
-                </span>
+    <div className="view-stack">
+      <div className="stats-grid">
+        <Stat label="Current streak" value={`${streak.current} ${streak.current === 1 ? "day" : "days"}`} />
+        <Stat label="Longest streak" value={`${streak.longest} ${streak.longest === 1 ? "day" : "days"}`} />
+        <Stat label="Active days" value={fmt.int(sum.activeDays)} />
+        <Stat label="Peak hour" value={`${String(peak).padStart(2, "0")}:00`} />
+      </div>
+      <div className={period ? "two-columns" : "view-stack"}>
+        <Panel title="Activity map" hint={`${period || 371} local calendar days`}>
+          <MapGrid byDay={sum.byDay} days={period} />
+          <div className="chart-caption">One square per day</div>
+        </Panel>
+        <Panel title="Hourly rhythm" hint="Tokens by local hour">
+          <div className="hourly">
+            {sum.byHour.map((hour, index) => (
+              <div
+                key={index}
+                title={`${String(index).padStart(2, "0")}:00\nTokens: ${fmt.int(hour.tokens)}\nRequests: ${fmt.int(hour.requests)}`}
+              >
+                <i style={{ height: `${(hour.tokens / max) * 130}px` }} />
+                <small>{index % 3 === 0 ? index.toString().padStart(2, "0") : ""}</small>
               </div>
             ))}
           </div>
-          <HeatLegend />
-        </Panel>
-      )}
-      <div className="grid grid-cols-3 gap-3.5">
-        <Panel title="Hourly rhythm" hint={periodLabel} className="col-span-2">
-          <HourlyBars byHour={sum.byHour} />
-        </Panel>
-        <Panel title="Streaks">
-          <KV k="Current streak" v={`${st.current} days`} />
-          <KV k="Longest streak" v={`${st.longest} days`} />
-          <KV k="Active days" v={`${full.activeDays} total`} />
-          <KV k="Peak hour" v={`${String(peakH).padStart(2, "0")}:00`} />
-          <KV k="Busiest by tokens" v={fmt.compact(peak)} />
         </Panel>
       </div>
+      {sum.sources.length > 1 && (
+        <Panel title="Activity by provider">
+          <ExpandableList items={sum.sources}>
+            {(visible) =>
+              visible.map((source) => (
+                <div className="provider-heat" key={source.name}>
+                  <span>{sourceLabel(source.name)}</span>
+                  <MapGrid byDay={providerDays.get(source.name)!} days={period} />
+                </div>
+              ))
+            }
+          </ExpandableList>
+        </Panel>
+      )}
     </div>
   );
 }

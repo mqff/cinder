@@ -1,23 +1,38 @@
-name: ci
-
+name: Verify
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
-
 permissions:
   contents: read
-
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
         with:
-          node-version: "22"
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
           cache: npm
       - run: npm ci
-      - run: npm test
-      - run: npm run check
+      - run: npm run verify
+      - if: runner.os != 'Linux'
+        run: npm run smoke
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a npm run smoke
+      - if: runner.os == 'Windows'
+        run: npm run smoke:large
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: smoke-${{ runner.os }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 7

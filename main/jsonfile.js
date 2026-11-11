@@ -1,60 +1,49 @@
-const fs = require("fs");
-
-const CHUNK = 4 * 1024 * 1024;
-
+const fs = require("node:fs");
+const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 function writeJsonFile(file, value) {
-  const tmp = file + ".tmp";
-  const fd = fs.openSync(tmp, "w");
-  let buf = "";
-  const flush = () => {
-    if (buf) fs.writeSync(fd, buf);
-    buf = "";
-  };
-  const put = (s) => {
-    buf += s;
-    if (buf.length >= CHUNK) flush();
-  };
-  const emit = (v, depth) => {
-    if (depth < 3 && Array.isArray(v)) {
-      put("[");
-      for (let i = 0; i < v.length; i++) {
-        if (i) put(",");
-        emit(v[i], depth + 1);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  let fd = fs.openSync(temporary, "wx", 0o600);
+  let buffer = "";
+  function flush() {
+    const bytes = Buffer.from(buffer);
+    for (let offset = 0; offset < bytes.length;) offset += fs.writeSync(fd, bytes, offset, bytes.length - offset);
+    buffer = "";
+  }
+  function append(text) {
+    buffer += text;
+    if (buffer.length >= 1024 * 1024) flush();
+  }
+  function encode(item, depth = 0) {
+    if (depth < 8 && item && typeof item === "object" && !item.toJSON) {
+      const array = Array.isArray(item);
+      append(array ? "[" : "{");
+      let separator = "";
+      const keys = array ? Array.from({ length: item.length }, (_, index) => index) : Object.keys(item);
+      for (const key of keys) {
+        const next = item[key];
+        if (!array && (next === undefined || typeof next === "function" || typeof next === "symbol")) continue;
+        append(separator);
+        separator = ",";
+        if (!array) append(JSON.stringify(key) + ":");
+        encode(next, depth + 1);
       }
-      put("]");
-      return;
-    }
-    if (depth < 3 && v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype) {
-      put("{");
-      let first = true;
-      for (const k of Object.keys(v)) {
-        const item = v[k];
-        if (item === undefined || typeof item === "function") continue;
-        if (!first) put(",");
-        first = false;
-        put(JSON.stringify(k) + ":");
-        emit(item, depth + 1);
-      }
-      put("}");
-      return;
-    }
-    const s = JSON.stringify(v);
-    put(s === undefined ? "null" : s);
-  };
+      append(array ? "]" : "}");
+    } else append(JSON.stringify(item) ?? "null");
+  }
   try {
-    emit(value, 0);
+    encode(value);
     flush();
+    fs.fsyncSync(fd);
     fs.closeSync(fd);
-    fs.renameSync(tmp, file);
-  } catch (err) {
+    fd = null;
+    fs.renameSync(temporary, file);
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
     try {
-      fs.closeSync(fd);
+      fs.unlinkSync(temporary);
     } catch {}
-    try {
-      fs.unlinkSync(tmp);
-    } catch {}
-    throw err;
   }
 }
-
 module.exports = { writeJsonFile };

@@ -1,53 +1,24 @@
-const { execFile } = require("child_process");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-
-const READER = path.join(__dirname, "sqlite-reader.js");
-const UNPACKED = READER.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-
-function copyLiveDb(dbPath) {
-  if (!dbPath || !fs.existsSync(dbPath)) return null;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cinder-db-"));
-  const dest = path.join(dir, "copy.db");
-  try {
-    fs.copyFileSync(dbPath, dest);
-    for (const ext of ["-wal", "-shm"]) {
-      const side = dbPath + ext;
-      if (fs.existsSync(side)) fs.copyFileSync(side, dest + ext);
-    }
-    return {
-      path: dest,
-      cleanup() {
-        try {
-          fs.rmSync(dir, { recursive: true, force: true });
-        } catch {}
-      }
-    };
-  } catch {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {}
-    return null;
-  }
-}
-
-function run(cmd, reader, dbPath, sql, extraEnv) {
+const { execFile } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const reader = path.join(__dirname, "sqlite-reader.js").replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
+function queryAll(file, sql) {
   return new Promise((resolve) => {
     execFile(
-      cmd,
-      [reader, dbPath, sql],
+      process.execPath,
+      [reader, file, sql],
       {
-        env: { ...process.env, ...extraEnv },
-        maxBuffer: 512 * 1024 * 1024,
-        timeout: 10 * 60 * 1000,
-        windowsHide: true
+        windowsHide: true,
+        timeout: 120000,
+        maxBuffer: 256 * 1024 * 1024,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
       },
-      (err, stdout) => {
-        if (err) return resolve(null);
+      (error, output) => {
+        if (error) return resolve(null);
         try {
-          const arr = JSON.parse(stdout);
-          resolve(Array.isArray(arr) ? arr : null);
+          const rows = JSON.parse(output);
+          resolve(Array.isArray(rows) ? rows : null);
         } catch {
           resolve(null);
         }
@@ -55,35 +26,27 @@ function run(cmd, reader, dbPath, sql, extraEnv) {
     );
   });
 }
-
-async function queryAll(dbPath, sql) {
-  const viaElectronNode = await run(process.execPath, READER, dbPath, sql, { ELECTRON_RUN_AS_NODE: "1" });
-  if (viaElectronNode) return viaElectronNode;
-  return run("node", UNPACKED, dbPath, sql, {});
-}
-
-async function withLiveDb(dbPath, fn) {
-  let direct = true;
-  let copy = null;
+async function withLiveDb(file, use) {
+  let scratch;
   const query = async (sql) => {
-    if (direct) {
-      const rows = await queryAll(dbPath, sql);
-      if (rows) return rows;
-      direct = false;
+    const direct = await queryAll(file, sql);
+    if (direct !== null) return direct;
+    if (!scratch) {
+      scratch = fs.mkdtempSync(path.join(os.tmpdir(), "cinder-sqlite-"));
+      try {
+        fs.copyFileSync(file, path.join(scratch, "snapshot.db"));
+        for (const suffix of ["-wal", "-shm"])
+          if (fs.existsSync(file + suffix)) fs.copyFileSync(file + suffix, path.join(scratch, "snapshot.db" + suffix));
+      } catch {
+        return null;
+      }
     }
-    if (!copy) copy = copyLiveDb(dbPath);
-    if (!copy) return null;
-    return queryAll(copy.path, sql);
+    return queryAll(path.join(scratch, "snapshot.db"), sql);
   };
   try {
-    return await fn(query);
+    return await use(query);
   } finally {
-    if (copy) copy.cleanup();
+    if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
-
-function queryLive(dbPath, sql) {
-  return withLiveDb(dbPath, (query) => query(sql));
-}
-
-module.exports = { queryAll, queryLive, withLiveDb };
+module.exports = { queryAll, withLiveDb, queryLive: (file, sql) => withLiveDb(file, (query) => query(sql)) };

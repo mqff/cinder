@@ -1,11 +1,11 @@
 {
   "name": "cinder",
   "productName": "Cinder",
-  "version": "2.7.0",
+  "version": "3.4.2",
   "private": true,
   "author": "Cinder",
   "license": "MIT",
-  "description": "Local dashboard for AI coding token usage.",
+  "description": "Desktop usage analytics for coding tools.",
   "homepage": "https://github.com/mydd7/cinder",
   "bugs": {
     "url": "https://github.com/mydd7/cinder/issues"
@@ -15,46 +15,55 @@
     "url": "https://github.com/mydd7/cinder.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "main": "main.js",
   "scripts": {
     "build:web": "vite build",
     "dev:web": "vite",
     "start": "vite build && electron .",
-    "dev": "concurrently -k \"vite\" \"cross-env CINDER_DEV=1 electron .\"",
+    "dev": "node tools/dev.js",
     "icons": "node tools/make-icons.js",
     "pricing": "node tools/build-pricing.js",
-    "test": "node --test ./test/core.test.js",
+    "test": "node --test test/*.test.js test/*.test.mts",
     "check": "tsc --noEmit",
-    "dist": "vite build && electron-builder --dir",
-    "build": "vite build && electron-builder"
-  },
-  "dependencies": {
-    "@hugeicons/core-free-icons": "^4.3.0",
-    "@hugeicons/react": "^1.1.10",
-    "clsx": "^2.1.1",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "tailwind-merge": "^3.6.0"
+    "dist": "node tools/build.js dir",
+    "build": "node tools/build.js",
+    "verify": "npm run format:check && npm run check:unused && npm test && npm run check && npm run build:web",
+    "smoke": "node tools/smoke.js",
+    "smoke:large": "node tools/smoke.js --large",
+    "smoke:package": "node tools/smoke.js --package",
+    "build:win": "node tools/build.js win",
+    "build:mac": "node tools/build.js mac",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "diagnose": "node tools/diagnose.js",
+    "diagnose:limits": "node tools/diagnose-limits.js",
+    "clean": "node tools/clean.js",
+    "check:unused": "knip"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.3",
+    "@base-ui/react": "^1.9.0",
+    "@electron/asar": "^3.4.1",
+    "@hugeicons/core-free-icons": "^4.3.0",
+    "@hugeicons/react": "^1.1.10",
+    "@tanstack/react-virtual": "^3.14.26",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
-    "concurrently": "^10.0.5",
-    "cross-env": "^10.1.0",
     "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
-    "tailwindcss": "^4.3.3",
+    "knip": "^6.45.0",
+    "prettier": "^3.9.10",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   },
   "build": {
     "appId": "app.local.cinder",
     "productName": "Cinder",
-    "copyright": "Copyright © 2026 Cinder",
+    "copyright": "Copyright (c) 2026 Cinder",
     "forceCodeSigning": false,
     "directories": {
       "output": "release"
@@ -108,5 +117,8 @@
       "shortcutName": "Cinder",
       "artifactName": "Cinder-Setup-${version}.${ext}"
     }
+  },
+  "overrides": {
+    "minimatch@>=9.0.0 <11.0.1": "^11.0.1"
   }
 }

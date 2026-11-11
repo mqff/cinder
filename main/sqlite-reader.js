@@ -1,11 +1,13 @@
 const { DatabaseSync } = require("node:sqlite");
-
+let database;
 try {
-  const db = new DatabaseSync(process.argv[2], { readOnly: true });
-  const rows = db.prepare(process.argv[3]).all();
-  db.close();
-  process.stdout.write(JSON.stringify(rows));
-} catch (e) {
-  process.stderr.write(String(e && e.message ? e.message : e));
-  process.exit(1);
+  database = new DatabaseSync(process.argv[2], { readOnly: true });
+  database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 3000;");
+  const result = database.prepare(process.argv[3]).all();
+  process.stdout.write(JSON.stringify(result, (_, value) => (typeof value === "bigint" ? Number(value) : value)));
+} catch (error) {
+  process.stderr.write(error.message);
+  process.exitCode = 1;
+} finally {
+  database?.close();
 }

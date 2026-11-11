@@ -1,102 +1,112 @@
-import { fmt } from "./format";
-import type { Bucket, CostBy, DayPoint, Entry, Summary, Totals } from "./types";
-
-const HOUR = 3600000;
-
-export function blank(): Totals {
-  return { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, tokens: 0, requests: 0, cost: 0 };
+import type { Entry, Totals, Summary, Bucket, DayPoint, UsageSelection, UsageFacets } from "./types.ts";
+import { fmt } from "./format.ts";
+export const blank = (): Totals => ({
+  input: 0,
+  output: 0,
+  cacheWrite: 0,
+  cacheRead: 0,
+  tokens: 0,
+  requests: 0,
+  cost: 0
+});
+function shiftDay(date: Date, offset: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + offset);
+  return next;
 }
-
-function add(t: Totals, e: Entry) {
-  t.input += e.input;
-  t.output += e.output;
-  t.cacheWrite += e.cacheWrite;
-  t.cacheRead += e.cacheRead;
-  t.tokens += e.input + e.output + e.cacheWrite + e.cacheRead;
-  t.requests += e.n ?? 1;
-  t.cost += e.cost;
+function addTotal(total: Totals, entry: Entry) {
+  for (const key of ["input", "output", "cacheWrite", "cacheRead", "cost"] as const) total[key] += entry[key] || 0;
+  total.tokens += entry.input + entry.output + entry.cacheWrite + entry.cacheRead;
+  total.requests += entry.n ?? 1;
+  total.unpriced = (total.unpriced || 0) + (entry.unpriced || 0);
+  total.cacheSavings = (total.cacheSavings || 0) + (entry.cacheSavings || 0);
+  total.speedPremium = (total.speedPremium || 0) + (entry.speedPremium || 0);
 }
-
-export function requestsOf(entries: Entry[]): number {
-  let n = 0;
-  for (const e of entries) n += e.n ?? 1;
-  return n;
+export function totalsOf(entries: Entry[]): Totals {
+  const total = blank();
+  for (const entry of entries) if (Number.isFinite(entry.t)) addTotal(total, entry);
+  return total;
 }
-
-export function filterPeriod(entries: Entry[], days: number): Entry[] {
-  if (!days) return entries;
-  const cut = Date.now() - days * 24 * HOUR;
-  return entries.filter((e) => e.t >= cut);
-}
-
-export function summarize(entries: Entry[]): Summary {
-  const totals = blank();
-  const costBy: CostBy = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
-  const byDay = new Map<string, Totals>();
-  const byModel = new Map<string, Totals>();
-  const modelSource = new Map<string, Map<string, number>>();
-  const byProject = new Map<string, Totals>();
-  const bySource = new Map<string, Totals>();
-  const byHour = Array.from({ length: 24 }, () => ({ tokens: 0, requests: 0 }));
-  const sessions = new Set<string>();
-  let first: number | null = null;
-  let last: number | null = null;
-
-  for (const e of entries) {
-    add(totals, e);
-    costBy.input += e.costInput;
-    costBy.output += e.costOutput;
-    costBy.cacheWrite += e.costCacheWrite;
-    costBy.cacheRead += e.costCacheRead;
-    const t = e.t;
-    const d = new Date(t);
-    if (first === null || t < first) first = t;
-    if (last === null || t > last) last = t;
-
-    const dk = fmt.dayKey(d);
-    if (!byDay.has(dk)) byDay.set(dk, blank());
-    add(byDay.get(dk)!, e);
-
-    if (!byModel.has(e.model)) byModel.set(e.model, blank());
-    add(byModel.get(e.model)!, e);
-    if (!modelSource.has(e.model)) modelSource.set(e.model, new Map());
-    const ms = modelSource.get(e.model)!;
-    ms.set(e.source, (ms.get(e.source) || 0) + e.input + e.output + e.cacheWrite + e.cacheRead);
-
-    if (!byProject.has(e.project)) byProject.set(e.project, blank());
-    add(byProject.get(e.project)!, e);
-
-    if (!bySource.has(e.source)) bySource.set(e.source, blank());
-    add(bySource.get(e.source)!, e);
-
-    const h = byHour[d.getHours()];
-    h.tokens += e.input + e.output + e.cacheWrite + e.cacheRead;
-    h.requests += e.n ?? 1;
-
-    sessions.add(e.session);
-  }
-
-  const toBuckets = (m: Map<string, Totals>): Bucket[] =>
-    [...m.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.tokens - a.tokens || b.requests - a.requests);
-
-  const dominantSource = (model: string): string | undefined => {
-    const ms = modelSource.get(model);
-    if (!ms) return undefined;
-    let best = "";
-    let max = -1;
-    for (const [s, t] of ms) if (t > max) ((max = t), (best = s));
-    return best || undefined;
+export function queryUsage(entries: Entry[], days: number, selection: UsageSelection, now = new Date()) {
+  const start = shiftDay(now, 1 - days);
+  start.setHours(0, 0, 0, 0);
+  const from = days ? start.getTime() : -Infinity;
+  const until = days ? now.getTime() : Infinity;
+  const matches: Entry[] = [];
+  const counts = {
+    source: new Map<string, number>(),
+    model: new Map<string, number>(),
+    project: new Map<string, number>()
   };
-  const models = [...byModel.entries()].map(([name, v]) => ({ name, source: dominantSource(name), ...v })).sort((a, b) => b.tokens - a.tokens || b.requests - a.requests);
-
+  const count = (key: keyof UsageSelection, entry: Entry) =>
+    counts[key].set(entry[key], (counts[key].get(entry[key]) || 0) + (entry.n ?? 1));
+  for (const entry of entries) {
+    if (!Number.isFinite(entry.t) || entry.t < from || entry.t > until) continue;
+    const source = !selection.source || entry.source === selection.source;
+    const model = !selection.model || entry.model === selection.model;
+    const project = !selection.project || entry.project === selection.project;
+    if (model && project) count("source", entry);
+    if (source && project) count("model", entry);
+    if (source && model) count("project", entry);
+    if (source && model && project) matches.push(entry);
+  }
+  const facet = (key: keyof UsageSelection) => {
+    if (selection[key] && !counts[key].has(selection[key])) counts[key].set(selection[key], 0);
+    return [...counts[key]]
+      .map(([name, requests]) => ({ name, requests }))
+      .sort((a, b) => b.requests - a.requests || a.name.localeCompare(b.name));
+  };
+  const facets: UsageFacets = { source: facet("source"), model: facet("model"), project: facet("project") };
+  return { entries: matches.length === entries.length ? entries : matches, facets };
+}
+export function summarize(entries: Entry[]): Summary {
+  const totals = blank(),
+    costBy = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+  const byDay = new Map<string, Totals>(),
+    models = new Map<string, Bucket>(),
+    projects = new Map<string, Bucket>(),
+    sources = new Map<string, Bucket>();
+  const byHour = Array.from({ length: 24 }, blank);
+  const sessions = new Set<string>();
+  let first: number | null = null,
+    last: number | null = null;
+  const group = (map: Map<string, Bucket>, key: string, entry: Entry) => {
+    let bucket = map.get(key);
+    if (!bucket) {
+      bucket = { ...blank(), name: key, source: entry.source };
+      map.set(key, bucket);
+    }
+    addTotal(bucket, entry);
+  };
+  for (const entry of entries) {
+    if (!Number.isFinite(entry.t)) continue;
+    addTotal(totals, entry);
+    costBy.input += entry.costInput || 0;
+    costBy.output += entry.costOutput || 0;
+    costBy.cacheWrite += entry.costCacheWrite || 0;
+    costBy.cacheRead += entry.costCacheRead || 0;
+    const date = new Date(entry.t),
+      key = fmt.dayKey(date);
+    if (!byDay.has(key)) byDay.set(key, blank());
+    addTotal(byDay.get(key)!, entry);
+    group(models, entry.model, entry);
+    group(projects, entry.project, entry);
+    group(sources, entry.source, entry);
+    addTotal(byHour[date.getHours()], entry);
+    sessions.add(JSON.stringify([entry.source, entry.session]));
+    first = first === null ? entry.t : Math.min(first, entry.t);
+    last = last === null ? entry.t : Math.max(last, entry.t);
+  }
+  const sorted = (map: Map<string, Bucket>) =>
+    [...map.values()].sort((a, b) => b.tokens - a.tokens || b.requests - a.requests);
   return {
     totals,
     costBy,
     byDay,
     byHour,
-    models,
-    projects: toBuckets(byProject),
-    sources: toBuckets(bySource),
+    models: sorted(models),
+    projects: sorted(projects),
+    sources: sorted(sources),
     sessions: sessions.size,
     activeDays: byDay.size,
     first,
@@ -104,81 +114,38 @@ export function summarize(entries: Entry[]): Summary {
     count: totals.requests
   };
 }
-
-export function daySeries(byDay: Map<string, Totals>, days: number): DayPoint[] {
-  const out: DayPoint[] = [];
-  const end = new Date();
+export function daySeries(byDay: Map<string, Totals>, days: number, now = new Date()): DayPoint[] {
+  const end = new Date(now);
   end.setHours(0, 0, 0, 0);
-  let start: Date;
-  if (days) {
-    start = new Date(end.getTime() - (days - 1) * 24 * HOUR);
-  } else {
-    const keys = [...byDay.keys()].sort();
-    start = keys.length ? new Date(keys[0] + "T00:00:00") : new Date(end);
+  const earliest = [...byDay.keys()].sort()[0];
+  const start = days ? shiftDay(end, 1 - days) : earliest ? new Date(earliest + "T00:00:00") : end;
+  const result: DayPoint[] = [];
+  for (let date = new Date(start); date <= end; date = shiftDay(date, 1)) {
+    const key = fmt.dayKey(date);
+    result.push({ ...blank(), ...byDay.get(key), key });
   }
-  for (let t = start.getTime(); t <= end.getTime(); t += 24 * HOUR) {
-    const key = fmt.dayKey(new Date(t));
-    const v = byDay.get(key) || blank();
-    out.push({ key, ...v });
-  }
-  return out;
+  return result;
 }
-
-export interface HeatCell {
-  key: string;
-  date: Date;
-  count: number;
-  future: boolean;
+export function hourSeries(byHour: Totals[]): DayPoint[] {
+  return byHour.map((total, hour) => ({ ...total, key: `${String(hour).padStart(2, "0")}:00` }));
 }
-
-export function heatmap(entries: Entry[], days = 371): { cells: HeatCell[]; max: number } {
-  const counts = new Map<string, number>();
-  const cut = Date.now() - days * 24 * HOUR;
-  for (const e of entries) {
-    const t = e.t;
-    if (t < cut) continue;
-    const k = fmt.dayKey(new Date(t));
-    counts.set(k, (counts.get(k) || 0) + (e.n ?? 1));
-  }
-  const end = new Date();
-  end.setHours(0, 0, 0, 0);
-  const startDow = new Date(end.getTime() - (days - 1) * 24 * HOUR);
-  startDow.setDate(startDow.getDate() - startDow.getDay());
-  const cells: HeatCell[] = [];
-  let max = 0;
-  for (let t = startDow.getTime(); t <= end.getTime(); t += 24 * HOUR) {
-    const d = new Date(t);
-    const k = fmt.dayKey(d);
-    const c = counts.get(k) || 0;
-    if (c > max) max = c;
-    cells.push({ key: k, date: d, count: c, future: t > end.getTime() });
-  }
-  return { cells, max };
-}
-
-export function streaks(byDay: Map<string, Totals>): { current: number; longest: number } {
+export function streaks(byDay: Map<string, Totals>, now = new Date()) {
   const keys = [...byDay.keys()].sort();
-  if (!keys.length) return { current: 0, longest: 0 };
-  const set = new Set(keys);
-  let longest = 0;
-  for (const k of keys) {
-    const prev = fmt.dayKey(new Date(new Date(k + "T00:00:00").getTime() - 24 * HOUR));
-    if (!set.has(prev)) {
-      let len = 0;
-      let cur = k;
-      while (set.has(cur)) {
-        len++;
-        cur = fmt.dayKey(new Date(new Date(cur + "T00:00:00").getTime() + 24 * HOUR));
-      }
-      if (len > longest) longest = len;
-    }
+  const dates = new Set(keys);
+  let longest = 0,
+    length = 0,
+    previous = "";
+  for (const key of keys) {
+    length = previous === fmt.dayKey(shiftDay(new Date(key + "T00:00:00"), -1)) ? length + 1 : 1;
+    longest = Math.max(longest, length);
+    previous = key;
   }
-  let current = 0;
-  let cur = fmt.dayKey(new Date());
-  if (!set.has(cur)) cur = fmt.dayKey(new Date(Date.now() - 24 * HOUR));
-  while (set.has(cur)) {
+  let current = 0,
+    date = new Date(now);
+  if (!dates.has(fmt.dayKey(date))) date = shiftDay(date, -1);
+  while (dates.has(fmt.dayKey(date))) {
     current++;
-    cur = fmt.dayKey(new Date(new Date(cur + "T00:00:00").getTime() - 24 * HOUR));
+    date = shiftDay(date, -1);
   }
   return { current, longest };
 }

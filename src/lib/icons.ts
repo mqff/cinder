@@ -3,32 +3,20 @@ import {
   ChartLineData01Icon,
   CubeIcon,
   FolderLibraryIcon,
+  ServerStack01Icon,
   ChampionIcon,
-  Coins01Icon,
-  ArrowDown01Icon,
-  ArrowUp01Icon,
-  FlashIcon,
+  Search01Icon,
   BoltIcon,
-  DollarCircleIcon,
-  Database01Icon,
-  EnergyIcon,
-  Calendar03Icon,
   Layers01Icon,
   MinusSignIcon,
   SquareIcon,
   Copy01Icon,
-  ServerStack01Icon,
   Cancel01Icon,
   Refresh01Icon,
-  Moon02Icon,
-  Sun03Icon,
-  GemIcon,
-  Leaf01Icon,
-  Wallet01Icon,
-  Compass01Icon,
-  Fire02Icon,
-  SparklesIcon,
-  Search01Icon
+  ArrowDown01Icon,
+  Tick02Icon,
+  GaugeIcon,
+  Settings01Icon
 } from "@hugeicons/core-free-icons";
 
 export const ICON = {
@@ -39,35 +27,17 @@ export const ICON = {
   providers: ServerStack01Icon,
   badges: ChampionIcon,
   search: Search01Icon,
-
-  tokens: Coins01Icon,
-  input: ArrowDown01Icon,
-  output: ArrowUp01Icon,
-  requests: FlashIcon,
   bolt: BoltIcon,
-  cost: DollarCircleIcon,
-  cache: Database01Icon,
-  avg: EnergyIcon,
-  calendar: Calendar03Icon,
   sessions: Layers01Icon,
-
   minimize: MinusSignIcon,
   maximize: SquareIcon,
   restore: Copy01Icon,
   close: Cancel01Icon,
   refresh: Refresh01Icon,
-  moon: Moon02Icon,
-  sun: Sun03Icon,
-
-  b_century: BoltIcon,
-  b_millionaire: GemIcon,
-  b_cache: Leaf01Icon,
-  b_spender: Wallet01Icon,
-  b_polyglot: CubeIcon,
-  b_explorer: Compass01Icon,
-  b_consistent: Calendar03Icon,
-  b_streak: Fire02Icon,
-  b_spark: SparklesIcon
+  chevron: ArrowDown01Icon,
+  check: Tick02Icon,
+  limits: GaugeIcon,
+  settings: Settings01Icon
 } as const;
 
 export type IconKey = keyof typeof ICON;

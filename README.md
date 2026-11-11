@@ -1,65 +1,51 @@
 # Cinder
 
-Local desktop dashboard for AI coding token usage. Reads local logs only, nothing leaves the machine. MIT.
+Desktop usage tracking for coding tools. See tokens, costs, sessions and account limits across your local tools.
 
-<img src="icon/icon.png" width="72" alt="Cinder" />
+![Cinder overview](docs/overview.png)
 
-<img src="docs/overview.png" alt="Overview" />
+## Download
 
-<img src="docs/activity.png" alt="Activity" />
+Get the installers from the [latest release](https://github.com/mydd7/cinder/releases/latest).
 
-<img src="docs/calls.png" alt="Calls" />
+| Platform             | Download                     |
+| -------------------- | ---------------------------- |
+| Windows x64          | `Cinder-Setup-<version>.exe` |
+| macOS, Apple silicon | `Cinder-<version>-arm64.dmg` |
+| macOS, Intel         | `Cinder-<version>-x64.dmg`   |
 
-<img src="docs/sessions.png" alt="Sessions" />
+Installers are built by GitHub Actions. They are unsigned; macOS builds are not notarized.
 
-## Install
+## Features
 
-Windows and macOS builds are on [releases](https://github.com/mydd7/cinder/releases). macOS is unsigned: right-click the app → Open. Linux: `npm run build` produces an AppImage.
+- Usage by tool, model, project and session, with hourly charts for Today.
+- Costs, cache usage, speed premiums and custom model prices.
+- Account quotas, reset times and available reset credits.
+- Tool calls, MCP servers, skills and CSV exports.
+- Fifteen themes with light, dark and system modes.
 
-## Setup
+Cinder reads saved history from 19 tools, including Claude, Codex, Cursor, OpenCode and Grok. See [supported sources](docs/sources.md) for the full list.
 
-1. `npm install`
-2. `npm start`
+History stays on your computer. Opening Limits or loading Cursor billing data contacts the provider using its existing login. Cost estimates are separate from subscription invoices.
 
-## Dev
+## Development
 
-- `npm run dev` — Vite + Electron with devtools
-- `npm test` — unit tests
-- `npm run check` — TypeScript
+Use Node.js 24 or newer.
 
-## Build
+```sh
+npm ci
+npm run dev
+```
 
-1. `npm run build:web` — renderer to `dist/`
-2. `npm run dist` — unpacked app
-3. `npm run build` — installer for the current OS
-4. `npm run icons` — regenerates `icon/` from `tools/make-icons.js`
+## Documentation
 
-## Stack
+- [Usage and pricing](docs/usage.md)
+- [Account limits](docs/limits.md)
+- [Themes](docs/appearance.md)
+- [Source paths and formats](docs/sources.md)
+- [Architecture](docs/architecture.md)
+- [Development](CONTRIBUTING.md)
+- [Tests](docs/testing.md)
+- [Releases](docs/releases.md)
 
-Electron, React 19, Vite, Tailwind v4, hugeicons. Renderer in `src/`, collectors in `main/`, bridge in `preload.js`.
-
-## Sources
-
-Claude, Codex, OpenCode, Kilo, Goose, Hermes, Gemini, Qwen, Droid, Amp, Kimi, Codebuff, OpenClaw, Pi, GitHub Copilot, Cursor, Antigravity, Grok. Each reader lives in `main/sources/` and uses its default paths plus an override env var (comma or semicolon separated):
-
-`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_DATA_DIR`, `KILO_DATA_DIR`, `GOOSE_PATH_ROOT`, `HERMES_HOME`, `GEMINI_DATA_DIR`, `QWEN_DATA_DIR`, `DROID_SESSIONS_DIR`, `AMP_DATA_DIR`, `KIMI_DATA_DIR`, `CODEBUFF_DATA_DIR`, `OPENCLAW_DIR`, `PI_AGENT_DIR`, `COPILOT_OTEL_FILE_EXPORTER_PATH`, `CURSOR_DATA_DIR`, `CURSOR_TRACKING_DB`, `ANTIGRAVITY_DATA_DIR`, `GROK_HOME`.
-
-SQLite sources use `node:sqlite`. Antigravity stores usage as protobuf with no `.proto`, so the reader decodes by field number. Cursor does not persist token counts locally: requests, models, sessions and tool calls only. Grok reads per-turn `usage.json` under `~/.grok/sessions` (Windows and macOS).
-
-## Pricing
-
-Per-model cost from a bundled `pricing-data.json`. Unknown models are zero. No network at runtime.
-
-`npm run pricing` rebuilds the snapshot from LiteLLM and models.dev. LiteLLM wins conflicts.
-
-## Calls
-
-Tool, MCP and skill counts from local logs (Claude, Codex, OpenCode, Cursor, Grok). Deduped by call id, cached in `calls-cache.json`.
-
-## Scan
-
-Completed scans go to `scan-snapshot.json` in the app data dir. On launch, open the last scan or run a new one. Large log sets are streamed; usage is compacted per minute per session/model.
-
-## Shortcuts
-
-`Ctrl/Cmd+R` rescan, `Ctrl/Cmd+1..8` switch view. Theme, mode, period and window geometry persist.
+[MIT](LICENSE).

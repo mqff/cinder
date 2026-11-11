@@ -1,6 +1,6 @@
-const fs = require("fs");
-const path = require("path");
-const zlib = require("zlib");
+const fs = require("node:fs");
+const path = require("node:path");
+const zlib = require("node:zlib");
 
 const OUT = path.join(__dirname, "..", "icon");
 const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
@@ -25,19 +25,8 @@ const CORE = [
   [46.6, 75],
   [45.3, 53]
 ];
-const SPARK_AT = [79, 22];
 
 const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-
-function star(cx, cy, outer, inner, n = 4, rot = -Math.PI / 2) {
-  const v = [];
-  for (let i = 0; i < n * 2; i++) {
-    const r = i % 2 === 0 ? outer : inner;
-    const a = rot + (i * Math.PI) / n;
-    v.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
-  }
-  return v;
-}
 
 function place(v, s) {
   return { x: (v[0] * s) / 100, y: (v[1] * s) / 100 };
@@ -161,7 +150,6 @@ function rasterize(polys, size, sub = 8) {
 
 function render(size) {
   const right = [EMBER[0], EMBER[1], EMBER[2], EMBER[3]];
-  const spark = star(SPARK_AT[0], SPARK_AT[1], 9.2, 3.4);
   const tile = rasterize([tilePoly(size, 0.225)], size);
   const span = 2 * (size - 1 || 1);
   const tileRgb = new Float32Array(size * size * 3);
@@ -186,8 +174,7 @@ function render(size) {
   const overlays = [
     { cov: rasterize([poly(EMBER, size, 0.13)], size), rgb: COAL_L },
     { cov: rasterize([poly(right, size, 0.13)], size), rgb: COAL_R },
-    { cov: rasterize([poly(CORE, size, 0.22)], size), rgb: HOT },
-    { cov: rasterize([poly(spark, size, 0.12)], size), rgb: HOT }
+    { cov: rasterize([poly(CORE, size, 0.22)], size), rgb: HOT }
   ];
   for (const { cov, rgb } of overlays) {
     for (let i = 0; i < n; i++) {
@@ -271,10 +258,8 @@ function encodeIco(images) {
   return Buffer.concat([dir, ...images.map((i) => i.png)]);
 }
 
-const SPARK = star(SPARK_AT[0], SPARK_AT[1], 9.2, 3.4);
 const emberPath = svgPath(EMBER, 100, 0.13);
 const corePath = svgPath(CORE, 100, 0.22);
-const sparkPath = svgPath(SPARK, 100, 0.12);
 const rightPath = svgPath([EMBER[0], EMBER[1], EMBER[2], EMBER[3]], 100, 0.13);
 
 fs.mkdirSync(OUT, { recursive: true });
@@ -292,16 +277,6 @@ fs.writeFileSync(
   <path d="${emberPath}" fill="#2a1610"/>
   <path d="${rightPath}" fill="#3f2216"/>
   <path d="${corePath}" fill="#fbf9f3"/>
-  <path d="${sparkPath}" fill="#fbf9f3"/>
-</svg>
-`
-);
-
-fs.writeFileSync(
-  path.join(OUT, "mark.svg"),
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
-  <path d="${emberPath}" fill="currentColor"/>
-  <path d="${sparkPath}" fill="currentColor"/>
 </svg>
 `
 );
@@ -313,7 +288,6 @@ fs.writeFileSync(
 fs.writeFileSync(path.join(OUT, "icon.png"), encodePng(512, render(512)));
 
 console.log("ember " + emberPath);
-console.log("spark " + sparkPath);
-console.log("icon/icon.svg   icon/mark.svg");
+console.log("icon/icon.svg");
 console.log("icon/icon.ico   " + ICO_SIZES.join(",") + "px");
 console.log("icon/icon.png   512px");

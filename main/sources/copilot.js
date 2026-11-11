@@ -1,87 +1,49 @@
-const fs = require("fs");
-const path = require("path");
-const { num, walk, readJsonl, mapLimit, HOME } = require("../normalize");
-
-function files() {
-  const out = [];
-  const otel = path.join(HOME, ".copilot", "otel");
-  if (fs.existsSync(otel)) walk(otel, ".jsonl", (f) => out.push(f));
-  const exp = process.env.COPILOT_OTEL_FILE_EXPORTER_PATH;
-  if (exp && fs.existsSync(exp) && fs.statSync(exp).isFile()) out.push(exp);
-  return [...new Set(out)];
-}
-
-const MODEL_ATTRS = ["gen_ai.request.model", "gen_ai.response.model", "gen_ai.model", "llm.model_name"];
-const SESSION_ATTRS = ["gen_ai.conversation.id", "session.id", "session_id", "conversation.id"];
-
-function attrNum(a, ...keys) {
-  for (const k of keys) if (a[k] != null) return num(a[k]);
-  return 0;
-}
-function attrStr(a, keys) {
-  for (const k of keys) if (a[k] != null && String(a[k]).trim()) return String(a[k]);
-  return null;
-}
-
-function tsOf(r) {
-  if (r.time != null) return r.time;
-  if (r.timestamp != null) return r.timestamp;
-  if (r.observed_timestamp != null) return r.observed_timestamp;
-  if (r.observedTimestamp != null) return r.observedTimestamp;
-  if (r.time_unix_nano != null) return Number(r.time_unix_nano) / 1e6;
-  if (r.timeUnixNano != null) return Number(r.timeUnixNano) / 1e6;
-  return null;
-}
-
-async function collect(cx) {
-  await mapLimit(files(), 8, (file) =>
-    cx.scanFile("copilot", path.dirname(file), file, async (out) => {
-      const records = [];
-      await readJsonl(file, (o) => records.push(o), (line) => line.includes("attributes"));
-      const ctx = new Map();
-      for (const r of records) {
-        const a = r.attributes;
-        if (!a) continue;
-        const trace = r.trace_id || r.traceId || (r.span_context && r.span_context.trace_id);
-        if (trace == null) continue;
-        const key = String(trace);
-        const cur = ctx.get(key) || {};
-        cur.model = cur.model || attrStr(a, MODEL_ATTRS);
-        cur.session = cur.session || attrStr(a, SESSION_ATTRS);
-        ctx.set(key, cur);
-      }
-      let mtime = null;
-      try {
-        mtime = fs.statSync(file).mtime;
-      } catch {}
-      for (const r of records) {
-        const a = r.attributes;
-        if (!a) continue;
-        const input = attrNum(a, "gen_ai.usage.input_tokens");
-        const output = attrNum(a, "gen_ai.usage.output_tokens");
-        if (input + output === 0) continue;
-        const cacheRead = attrNum(a, "gen_ai.usage.cache_read.input_tokens");
-        const cacheWrite = attrNum(a, "gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.cache_creation.input_tokens");
-        const reasoning = attrNum(a, "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens");
-        const trace = r.trace_id || r.traceId || (r.span_context && r.span_context.trace_id);
-        const c = (trace != null && ctx.get(String(trace))) || {};
-        const responseId = attrStr(a, ["gen_ai.response.id", "response_id"]);
+const path = require("node:path");
+const { sourceFiles } = require("../source-paths");
+const { lines, num, parallel } = require("../io");
+const get = (attrs, keys) => keys.map((key) => attrs[key]).find((value) => value != null);
+const models = ["gen_ai.response.model", "gen_ai.request.model", "gen_ai.model", "llm.model_name"];
+const sessions = ["gen_ai.conversation.id", "session.id", "session_id", "conversation.id"];
+async function collect(collector) {
+  await parallel(sourceFiles("copilot"), 8, (file) =>
+    collector.scanFile("copilot", path.dirname(file), file, async (out) => {
+      const records = [],
+        traces = new Map();
+      await lines(file, (record) => {
+        const attrs = record.attributes;
+        if (!attrs) return;
+        records.push(record);
+        const trace = record.trace_id || record.traceId || record.span_context?.trace_id;
+        const prior = traces.get(trace) || {};
+        traces.set(trace, { model: get(attrs, models) || prior.model, session: get(attrs, sessions) || prior.session });
+      });
+      for (const record of records) {
+        const attrs = record.attributes;
+        const trace = record.trace_id || record.traceId || record.span_context?.trace_id;
+        const context = traces.get(trace) || {};
+        const ts =
+          record.time ??
+          record.timestamp ??
+          record.observed_timestamp ??
+          record.observedTimestamp ??
+          Number(record.time_unix_nano ?? record.timeUnixNano) / 1e6;
         out.add({
           source: "copilot",
-          ts: tsOf(r) || mtime,
-          model: attrStr(a, MODEL_ATTRS) || c.model || "copilot",
           provider: "github-copilot",
-          session: attrStr(a, SESSION_ATTRS) || c.session || path.basename(file, ".jsonl"),
-          input,
-          output,
-          cacheWrite,
-          cacheRead,
-          reasoning,
-          dedup: responseId || (trace != null ? String(trace) + ":" + (tsOf(r) || "") : undefined)
+          ts,
+          model: get(attrs, models) || context.model || "copilot",
+          session: get(attrs, sessions) || context.session || path.basename(file),
+          input: num(attrs["gen_ai.usage.input_tokens"]),
+          output: num(attrs["gen_ai.usage.output_tokens"]),
+          cacheRead: num(attrs["gen_ai.usage.cache_read.input_tokens"]),
+          cacheWrite: num(
+            get(attrs, ["gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.cache_creation.input_tokens"])
+          ),
+          reasoning: num(get(attrs, ["gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens"])),
+          dedup: get(attrs, ["gen_ai.response.id", "response_id"]) || (trace ? `${trace}:${ts}` : undefined)
         });
       }
     })
   );
 }
-
 module.exports = { id: "copilot", label: "GitHub Copilot", collect };

@@ -1,0 +1,305 @@
+button,
+input {
+  font: inherit;
+}
+button {
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+svg:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 3px;
+}
+input {
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px 10px;
+  max-width: 100%;
+}
+input::placeholder {
+  color: var(--muted-foreground);
+}
+.inline-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: transparent;
+  height: var(--control-height);
+  line-height: 16px;
+}
+.button:hover {
+  background: var(--muted);
+}
+.button.primary {
+  background: var(--foreground);
+  border-color: var(--foreground);
+  color: var(--background);
+}
+.filterbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  height: var(--control-height);
+  align-items: stretch;
+}
+.segmented button {
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 16px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.filter-selects {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: auto;
+}
+.filter-selects .choice-trigger {
+  width: 140px;
+}
+.filter-selects .choice-trigger[aria-label="Models"] {
+  width: 168px;
+}
+.filter-reset {
+  width: var(--control-height);
+  height: var(--control-height);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted-foreground);
+}
+.filter-reset:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.choice-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: left;
+}
+.choice-trigger:hover,
+.choice-trigger[data-popup-open] {
+  background: var(--muted);
+  border-color: color-mix(in srgb, var(--foreground) 20%, transparent);
+}
+.choice-trigger[data-active] {
+  border-color: color-mix(in srgb, var(--brand-2) 45%, transparent);
+  background: color-mix(in srgb, var(--brand-2) 7%, transparent);
+}
+.choice-trigger > svg {
+  display: block;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.choice-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.choice-positioner {
+  z-index: 100;
+  outline: 0;
+}
+.choice-popup {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  min-width: var(--anchor-width);
+  max-width: var(--available-width);
+  max-height: min(390px, var(--available-height));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--foreground) 17%, transparent);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow:
+    0 12px 36px #0004,
+    0 2px 6px #0002;
+  outline: 0;
+}
+.choice-popup-wide {
+  width: 360px;
+}
+.choice-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  height: 42px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+.choice-search:focus-within {
+  border-bottom-color: color-mix(in srgb, var(--foreground) 25%, transparent);
+}
+.choice-search input {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-height);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  outline: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.choice-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  min-height: 0;
+  scroll-padding-block: 4px;
+  outline: 0;
+}
+.choice-list[data-empty] {
+  padding: 0;
+}
+.choice-list-virtual {
+  overflow: hidden;
+}
+.choice-virtual-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: max(34px, calc(var(--available-height) - 52px));
+}
+.choice-virtual-space {
+  position: relative;
+}
+.choice-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  user-select: none;
+  outline: 0;
+}
+.choice-option[data-highlighted] {
+  background: var(--muted);
+}
+.choice-check {
+  grid-column: 1;
+  display: grid;
+  place-items: center;
+  color: var(--brand);
+}
+.choice-option-label {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.choice-count {
+  grid-column: 3;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.choice-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.calls-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: var(--control-height);
+}
+.calls-toolbar .choice-trigger {
+  width: 180px;
+}
+.toolbar-meta {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-height);
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 16px;
+}
+.toolbar-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  line-height: 16px;
+}
+@media (max-width: 1100px) {
+  .filterbar {
+    gap: 10px;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  button {
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+}

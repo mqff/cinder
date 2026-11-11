@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - id: version
+        name: Check version and release notes
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const { version } = require("./package.json");
+          if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Use a stable x.y.z release version.");
+          const tag = `v${version}`;
+          if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME !== tag)
+            throw new Error("The tag must match package.json.");
+          if (!fs.readFileSync(`docs/releases/${tag}.md`, "utf8").trim())
+            throw new Error("Release notes are empty.");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=${tag}\n`);
+          NODE
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            command: build:win
+            artifact: installers-windows
+            path: release/Cinder-Setup-*.exe
+          - os: macos-latest
+            command: build:mac
+            artifact: installers-macos
+            path: release/*.dmg
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run smoke
+      - run: npm run ${{ matrix.command }}
+      - run: npm run smoke:package
+      - if: runner.os == 'Windows'
+        run: npm run smoke:package -- --large
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: release-checks-${{ runner.os }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: installers
+      - name: Check installers and write checksums
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs"), assert = require("node:assert/strict");
+          const version = process.env.RELEASE_VERSION;
+          const expected = [`Cinder-Setup-${version}.exe`, `Cinder-${version}-arm64.dmg`, `Cinder-${version}-x64.dmg`];
+          assert.deepEqual(fs.readdirSync("installers").sort(), expected.sort());
+          for (const file of expected) assert.ok(fs.statSync(`installers/${file}`).size > 0, `Empty installer: ${file}`);
+          NODE
+          (cd installers && sha256sum Cinder-* > SHA256SUMS.txt)
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > release.json 2>/dev/null; then
+            node -e 'const release = require("./release.json"); if (!release.isDraft || release.targetCommitish !== process.env.GITHUB_SHA) throw new Error("Only a draft for this source commit can be reused.")'
+          else
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "Cinder $RELEASE_VERSION" --notes-file "docs/releases/$RELEASE_TAG.md" --draft
+          fi
+          gh release upload "$RELEASE_TAG" installers/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

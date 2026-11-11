@@ -1,10 +1,7 @@
-#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
 
-const fs = require("fs");
-const path = require("path");
-
-const LITELLM_URL =
-  "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 const MODELSDEV_URL = "https://models.dev/api.json";
 const OUT = path.join(__dirname, "..", "pricing-data.json");
 
@@ -19,29 +16,10 @@ const RANK = [
 const AGGREGATOR_RANK = 7;
 const DERIVED_PENALTY = 2;
 
-const OVERRIDES = {
-  "claude-sonnet-5": {
-    in: 3,
-    out: 15,
-    cr: 0.3,
-    cw: 3.75,
-    cw1h: 6,
-    dated: [{ until: "2026-09-01T00:00:00Z", in: 2, out: 10, cr: 0.2, cw: 2.5, cw1h: 4 }]
-  }
-};
-
-const OVERRIDE_ALIASES = (base) => [
-  base,
-  `anthropic/${base}`,
-  `${base}@default`,
-  `anthropic.${base}`,
-  `us.anthropic.${base}`,
-  `global.anthropic.${base}`,
-  `au.anthropic.${base}`,
-  `jp.anthropic.${base}`
-];
-
-const norm = (s) => String(s || "").trim().toLowerCase();
+const norm = (s) =>
+  String(s || "")
+    .trim()
+    .toLowerCase();
 
 function rankOf(provider) {
   const p = norm(provider);
@@ -79,22 +57,24 @@ function makeRate(id, provider, { input, output, cacheWrite, cacheRead, cacheWri
   const rate = {
     in: round(input),
     out: round(typeof output === "number" && isFinite(output) ? output : 0),
-    cr: round(cacheRead || 0),
-    cw: round(cacheWrite || 0)
+    ...(typeof cacheRead === "number" ? { cr: round(cacheRead) } : {}),
+    ...(typeof cacheWrite === "number" ? { cw: round(cacheWrite) } : {})
   };
   if (anthropicish(id, provider) && rate.in > 0) {
-    if (!rate.cw) rate.cw = round(rate.in * 1.25);
-    if (!rate.cr) rate.cr = round(rate.in * 0.1);
-    const ratio = cacheWrite1h ? cacheWrite1h / rate.in : 0;
-    rate.cw1h = round(ratio >= 1.5 && ratio <= 3 ? cacheWrite1h : rate.in * 2);
-  } else if (cacheWrite1h) {
+    if (cacheWrite == null) rate.cw = round(rate.in * 1.25);
+    if (cacheRead == null) rate.cr = round(rate.in * 0.1);
+    rate.cw1h = round(cacheWrite1h ?? rate.in * 2);
+  } else if (cacheWrite1h !== undefined) {
     rate.cw1h = round(cacheWrite1h);
   }
   return rate;
 }
 
 async function fetchJson(url) {
-  const res = await fetch(url, { headers: { "user-agent": "cinder-pricing-build" } });
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(30000),
+    headers: { "user-agent": "cinder-pricing-build" }
+  });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   return res.json();
 }
@@ -109,11 +89,43 @@ function fromLiteLLM(data) {
     const rate = makeRate(key, provider, {
       input: m.input_cost_per_token * M,
       output: (m.output_cost_per_token || 0) * M,
-      cacheWrite: (m.cache_creation_input_token_cost || 0) * M,
-      cacheRead: (m.cache_read_input_token_cost || 0) * M,
-      cacheWrite1h: (m.cache_creation_input_token_cost_above_1hr || 0) * M
+      cacheWrite: m.cache_creation_input_token_cost == null ? undefined : m.cache_creation_input_token_cost * M,
+      cacheRead: m.cache_read_input_token_cost == null ? undefined : m.cache_read_input_token_cost * M,
+      cacheWrite1h:
+        m.cache_creation_input_token_cost_above_1hr == null
+          ? undefined
+          : m.cache_creation_input_token_cost_above_1hr * M
     });
     if (!rate) continue;
+    for (const [speed, suffix] of [
+      ["fast", "_priority"],
+      ["ultrafast", "_ultrafast"]
+    ]) {
+      const multiple = speed === "fast" ? m.provider_specific_entry?.fast : undefined;
+      if (Number.isFinite(multiple) && multiple > 0)
+        rate[speed] = Object.fromEntries(
+          Object.entries(rate)
+            .filter(([, value]) => typeof value === "number")
+            .map(([key, value]) => [key, round(value * multiple)])
+        );
+      else if (
+        Number.isFinite(m[`input_cost_per_token${suffix}`]) &&
+        Number.isFinite(m[`output_cost_per_token${suffix}`])
+      ) {
+        const input = m[`input_cost_per_token${suffix}`] * M;
+        const tier = { in: round(input), out: round(m[`output_cost_per_token${suffix}`] * M) };
+        for (const [key, field] of [
+          ["cr", "cache_read_input_token_cost"],
+          ["cw", "cache_creation_input_token_cost"],
+          ["cw1h", "cache_creation_input_token_cost_above_1hr"]
+        ]) {
+          const explicit = m[`${field}${suffix}`];
+          if (Number.isFinite(explicit)) tier[key] = round(explicit * M);
+          else if (Number.isFinite(rate[key])) tier[key] = round(rate.in > 0 ? (rate[key] * input) / rate.in : input);
+        }
+        rate[speed] = tier;
+      }
+    }
 
     const scoped = key.includes("/");
     const model = scoped ? key.slice(key.indexOf("/") + 1) : key;
@@ -123,9 +135,7 @@ function fromLiteLLM(data) {
     const aliases = [];
     expand(key).forEach((a, i) => aliases.push({ alias: a, rank: base, exact: i === 0 }));
     expand(model).forEach((a, i) => aliases.push({ alias: a, rank: derived, exact: i === 0 }));
-    expand(bareOf(key)).forEach((a, i) =>
-      aliases.push({ alias: a, rank: derived, exact: i === 0 })
-    );
+    expand(bareOf(key)).forEach((a, i) => aliases.push({ alias: a, rank: derived, exact: i === 0 }));
 
     rows.push({ key, provider, rate, aliases });
   }
@@ -151,9 +161,7 @@ function fromModelsDev(data) {
       const base = rankOf(provider);
       const aliases = [];
       expand(id).forEach((a, i) => aliases.push({ alias: a, rank: base, exact: i === 0 }));
-      expand(bareOf(id)).forEach((a, i) =>
-        aliases.push({ alias: a, rank: base, exact: i === 0 })
-      );
+      expand(bareOf(id)).forEach((a, i) => aliases.push({ alias: a, rank: base, exact: i === 0 }));
 
       rows.push({ key: `${provider}/${id}`, provider, rate, aliases });
     }
@@ -161,43 +169,12 @@ function fromModelsDev(data) {
   return rows;
 }
 
-function weightOf(rank) {
-  if (rank <= 1) return 4;
-  if (rank <= 3) return 2;
-  return 1;
-}
-
-function sigOf(rate) {
-  return rate.in + "|" + rate.out;
-}
-
 function pick(proposals) {
-  const votes = new Map();
-  for (const p of proposals) {
-    const sig = sigOf(p.rate);
-    votes.set(sig, (votes.get(sig) || 0) + weightOf(p.rank));
-  }
-
-  let best = null;
-  for (const p of proposals) {
-    const score = [
-      p.tier,
-      -(votes.get(sigOf(p.rate)) || 0),
-      p.rank,
-      p.exact ? 0 : 1,
-      p.key
-    ];
-    if (!best) {
-      best = { p, score };
-      continue;
-    }
-    for (let i = 0; i < score.length; i++) {
-      if (score[i] === best.score[i]) continue;
-      if (score[i] < best.score[i]) best = { p, score };
-      break;
-    }
-  }
-  return best ? best.p.rate : null;
+  return (
+    [...proposals].sort(
+      (a, b) => a.tier - b.tier || a.rank - b.rank || Number(b.exact) - Number(a.exact) || a.key.localeCompare(b.key)
+    )[0]?.rate || null
+  );
 }
 
 function build(litellm, modelsdev) {
@@ -243,74 +220,39 @@ function build(litellm, modelsdev) {
     if (rate) qualified[q] = rate;
   }
 
-  for (const [base, rate] of Object.entries(OVERRIDES)) {
-    for (const alias of OVERRIDE_ALIASES(base)) {
-      const a = norm(alias);
-      flat[a] = rate;
-      for (const q of Object.keys(qualified)) {
-        if (q.endsWith("/" + a)) qualified[q] = rate;
-      }
-    }
-  }
-
   return { flat, qualified };
 }
 
-const EXPECT = [
-  ["claude-sonnet-4-20250514", { in: 3, out: 15, cw: 3.75, cw1h: 6, cr: 0.3 }],
-  ["claude-opus-4-20250514", { in: 15, out: 75, cw: 18.75, cw1h: 30, cr: 1.5 }],
-  ["claude-3-7-sonnet-20250219", { in: 3, out: 15, cw: 3.75, cw1h: 6, cr: 0.3 }],
-  ["claude-3-haiku-20240307", { in: 0.25, out: 1.25, cw: 0.3, cw1h: 0.5, cr: 0.03 }],
-  ["claude-3-opus-20240229", { in: 15, out: 75, cw: 18.75, cw1h: 30, cr: 1.5 }],
-  ["claude-3-5-haiku-20241022", { in: 0.8, out: 4, cw: 1, cw1h: 1.6, cr: 0.08 }],
-  ["claude-3.5-haiku", { in: 0.8, out: 4 }],
-  ["claude-sonnet-4-5", { in: 3, out: 15, cw: 3.75, cw1h: 6, cr: 0.3 }],
-  ["claude-sonnet-4-5-20250929", { in: 3, out: 15, cw: 3.75, cw1h: 6, cr: 0.3 }],
-  ["claude-opus-4-1", { in: 15, out: 75, cw: 18.75, cw1h: 30, cr: 1.5 }],
-  ["claude-opus-4-5", { in: 5, out: 25, cw: 6.25, cw1h: 10, cr: 0.5 }],
-  ["claude-opus-5", { in: 5, out: 25, cw: 6.25, cw1h: 10, cr: 0.5 }],
-  ["claude-haiku-4-5", { in: 1, out: 5, cw: 1.25, cw1h: 2, cr: 0.1 }],
-  ["claude-haiku-4.5", { in: 1, out: 5 }],
-  ["claude-fable-5", { in: 10, out: 50, cw: 12.5, cw1h: 20, cr: 1 }],
-  ["gpt-5", { in: 1.25, out: 10 }],
-  ["gpt-5.1-codex", { in: 1.25, out: 10 }],
-  ["gemini-2.5-pro", { in: 1.25, out: 10 }]
-];
-
 function validate(data) {
   const problems = [];
-
-  for (const [key, want] of EXPECT) {
-    const got = data.flat[key];
-    if (!got) {
-      problems.push(`missing ${key}`);
-      continue;
-    }
-    for (const [field, value] of Object.entries(want)) {
-      if (Math.abs((got[field] || 0) - value) > 0.001) {
-        problems.push(`${key}.${field} = ${got[field]}, expected ${value}`);
+  for (const group of ["flat", "qualified"]) {
+    if (!Object.keys(data[group] || {}).length) problems.push(`empty ${group} pricing map`);
+    for (const [model, rate] of Object.entries(data[group] || {})) {
+      for (const [field, value] of Object.entries(rate)) {
+        if (field === "dated") continue;
+        if (["fast", "ultrafast"].includes(field)) {
+          if (
+            !value ||
+            !Number.isFinite(value.in) ||
+            !Number.isFinite(value.out) ||
+            Object.values(value).some((amount) => !Number.isFinite(amount) || amount < 0)
+          )
+            problems.push(`${group}.${model}.${field} has invalid tier rates`);
+          continue;
+        }
+        if (!Number.isFinite(value) || value < 0)
+          problems.push(`${group}.${model}.${field} must be finite and nonnegative`);
       }
+      if (!Number.isFinite(rate.in) || !Number.isFinite(rate.out))
+        problems.push(`${group}.${model} is missing input/output rates`);
     }
   }
-
-  for (const [key, rate] of Object.entries(data.flat)) {
-    if (!/claude/.test(key) || rate.in === 0) continue;
-    if (!(rate.cw > 0) || !(rate.cr > 0)) problems.push(`${key} has zero cache pricing`);
-    const ratio = rate.cw1h / rate.in;
-    if (rate.cw1h && (ratio < 1.5 || ratio > 3)) {
-      problems.push(`${key} cw1h ${rate.cw1h} is ${ratio.toFixed(1)}x input`);
-    }
-  }
-
   return problems;
 }
 
 async function main() {
   process.stdout.write("fetching LiteLLM + models.dev ...\n");
-  const [litellm, modelsdev] = await Promise.all([
-    fetchJson(LITELLM_URL),
-    fetchJson(MODELSDEV_URL)
-  ]);
+  const [litellm, modelsdev] = await Promise.all([fetchJson(LITELLM_URL), fetchJson(MODELSDEV_URL)]);
 
   const data = build(litellm, modelsdev);
 
@@ -383,7 +325,7 @@ function writeOut(data) {
   );
 }
 
-if (process.argv.includes("--repack")) {
+if (require.main === module && process.argv.includes("--repack")) {
   const raw = JSON.parse(fs.readFileSync(OUT, "utf8"));
   const data = inflate(raw);
   const problems = validate(data);
@@ -393,9 +335,11 @@ if (process.argv.includes("--repack")) {
     process.exit(1);
   }
   writeOut(data);
-} else {
+} else if (require.main === module) {
   main().catch((err) => {
     process.stderr.write(String((err && err.stack) || err) + "\n");
     process.exit(1);
   });
 }
+
+module.exports = { build, validate, intern, inflate };

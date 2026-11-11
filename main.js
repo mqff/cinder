@@ -1,314 +1,249 @@
-const { app, BrowserWindow, Menu, ipcMain, screen, shell, utilityProcess } = require("electron");
-const fs = require("fs");
-const path = require("path");
-const { readSnapshot, snapshotInfo, writeSnapshot, clearSnapshot } = require("./main/snapshot");
-
-const ICON = path.join(__dirname, "icon", process.platform === "win32" ? "icon.ico" : "icon.png");
-const DEFAULT_BG = "#1f1e1d";
-
-let win = null;
-let state = { width: 1200, height: 800, bg: DEFAULT_BG };
-let saveTimer = null;
-
-function statePath() {
-  return path.join(app.getPath("userData"), "window-state.json");
-}
-
-function loadState() {
+const { app, BrowserWindow, Menu, ipcMain, screen, shell, utilityProcess, dialog } = require("electron");
+const path = require("node:path");
+const { json } = require("./main/io");
+const { writeJsonFile } = require("./main/jsonfile");
+const { normalizeWindowState } = require("./main/window-state");
+const { createWorkerPool } = require("./main/worker-pool");
+const { createScanService } = require("./main/scan-service");
+const { createLimitsService } = require("./main/limits-service");
+const { savedProfiles, addProfile, removeProfile } = require("./main/limits");
+const { readRules } = require("./main/pricing-rules");
+let window = null,
+  saveTimer,
+  service,
+  limitsService;
+let state = normalizeWindowState();
+const stateFile = () => path.join(app.getPath("userData"), "window-state.json");
+const current = () => (window && !window.isDestroyed() ? window : null);
+function saveWindow() {
+  const target = current();
+  if (!target) return;
+  state = normalizeWindowState({ ...state, ...target.getNormalBounds(), maximized: target.isMaximized() });
   try {
-    const raw = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-    if (raw && typeof raw === "object") state = { ...state, ...raw };
-  } catch {}
-  if (typeof state.bg !== "string" || !/^#[0-9a-f]{3,8}$/i.test(state.bg)) state.bg = DEFAULT_BG;
+    writeJsonFile(stateFile(), state);
+  } catch (error) {
+    console.error("Window state:", error.message);
+  }
 }
-
-function onVisibleDisplay(bounds) {
-  if (typeof bounds.x !== "number" || typeof bounds.y !== "number") return false;
-  return screen.getAllDisplays().some((d) => {
-    const a = d.workArea;
-    return bounds.x < a.x + a.width && bounds.x + 80 > a.x && bounds.y < a.y + a.height && bounds.y + 40 > a.y;
-  });
-}
-
-function saveState() {
-  if (!win || win.isDestroyed()) return;
-  const b = win.getNormalBounds();
-  state = { ...state, x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() };
-  try {
-    const tmp = statePath() + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(state));
-    fs.renameSync(tmp, statePath());
-  } catch {}
-}
-
-function queueSave() {
+function scheduleSave() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveState, 400);
+  saveTimer = setTimeout(saveWindow, 300);
 }
-
+function openLink(value) {
+  try {
+    const url = new URL(value);
+    if (["https:", "http:"].includes(url.protocol))
+      void shell.openExternal(url.href).catch((error) => console.error("Open link:", error.message));
+  } catch {}
+}
+function pool(name, channel = "usage:progress") {
+  return createWorkerPool(
+    () =>
+      utilityProcess.fork(path.join(__dirname, "main", "scan-worker.js"), [], {
+        serviceName: name,
+        execArgv: ["--max-old-space-size=4096"]
+      }),
+    (progress) => current()?.webContents.send(channel, progress)
+  );
+}
+const usagePool = pool("cinder-usage"),
+  callsPool = pool("cinder-calls"),
+  limitsPool = pool("cinder-limits", "limits:progress"),
+  accountsPool = pool("cinder-accounts");
+function limits() {
+  return (limitsService ||= createLimitsService({ dir: app.getPath("userData"), pool: limitsPool }));
+}
+function scans() {
+  return (service ||= createScanService({ dir: app.getPath("userData"), usagePool, callsPool }));
+}
+function trusted(event) {
+  const target = current();
+  if (!target || event.sender !== target.webContents || event.senderFrame !== target.webContents.mainFrame)
+    throw new Error("Untrusted IPC sender");
+}
+const handlers = {
+  "window:minimize": () => current()?.minimize(),
+  "window:close": () => current()?.close(),
+  "window:is-maximized": () => current()?.isMaximized() || false,
+  "window:toggle-maximize": () => {
+    const target = current();
+    if (!target) return false;
+    if (target.isMaximized()) target.unmaximize();
+    else target.maximize();
+    return target.isMaximized();
+  },
+  "usage:collect": () => scans().collect(),
+  "pricing:read": () => readRules(app.getPath("userData")),
+  "pricing:save": (rules) => scans().updatePricing(rules),
+  "usage:calls": () => scans().calls(),
+  "usage:cancel": () => scans().cancel(),
+  "limits:read": () => limits().read(),
+  "limits:refresh": () => limits().refresh(),
+  "limits:reset": (input) => limits().consume(input),
+  "accounts:cursor-usage": (input) =>
+    accountsPool.run(
+      { kind: "cursor-usage", cacheDir: app.getPath("userData"), input },
+      { entries: [], sources: [], scannedAt: "", from: "", until: "" }
+    ),
+  "limits:profiles": () => savedProfiles(app.getPath("userData")),
+  "limits:remove-profile": (profile) => removeProfile(app.getPath("userData"), profile),
+  "limits:add-profile": async (provider) => {
+    if (!["codex", "claude", "cursor", "grok", "opencode", "antigravity"].includes(provider))
+      throw new Error("Unknown provider.");
+    const result = await dialog.showOpenDialog(current(), {
+      title: "Select an existing account directory",
+      properties: ["openDirectory"]
+    });
+    return result.canceled
+      ? savedProfiles(app.getPath("userData"))
+      : addProfile(app.getPath("userData"), { provider, root: result.filePaths[0] });
+  },
+  "snapshot:info": () => scans().info(),
+  "snapshot:usage": () => scans().usage(),
+  "snapshot:calls": () => scans().savedCalls()
+};
+for (const [channel, handler] of Object.entries(handlers))
+  ipcMain.handle(channel, (event, input) => {
+    trusted(event);
+    return handler(input);
+  });
+ipcMain.on("theme:background", (event, value) => {
+  try {
+    trusted(event);
+  } catch {
+    return;
+  }
+  const next = normalizeWindowState({ ...state, bg: value });
+  state.bg = next.bg;
+  current()?.setBackgroundColor(state.bg);
+  scheduleSave();
+});
 function createWindow() {
-  const opts = {
-    width: Math.max(940, state.width || 1200),
-    height: Math.max(600, state.height || 800),
+  const visible =
+    Number.isFinite(state.x) &&
+    screen
+      .getAllDisplays()
+      .some(
+        ({ workArea: area }) =>
+          state.x + 80 > area.x &&
+          state.x < area.x + area.width &&
+          state.y + 40 > area.y &&
+          state.y < area.y + area.height
+      );
+  const target = new BrowserWindow({
+    width: state.width,
+    height: state.height,
     minWidth: 940,
     minHeight: 600,
+    ...(visible ? { x: state.x, y: state.y } : {}),
     show: false,
-    ...(process.platform === "darwin"
-      ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 12, y: 10 } }
-      : { frame: false }),
-    backgroundColor: state.bg,
-    icon: ICON,
     title: "Cinder",
+    backgroundColor: state.bg,
+    icon: path.join(__dirname, "icon", process.platform === "win32" ? "icon.ico" : "icon.png"),
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 14, y: 13 } }
+      : { frame: false }),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       spellcheck: false,
       webviewTag: false
     }
-  };
-  if (onVisibleDisplay(state)) {
-    opts.x = state.x;
-    opts.y = state.y;
-  }
-
-  win = new BrowserWindow(opts);
-  if (state.maximized) win.maximize();
-
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    openExternal(url);
+  });
+  window = target;
+  if (state.maximized) target.maximize();
+  target.webContents.setWindowOpenHandler(({ url }) => {
+    openLink(url);
     return { action: "deny" };
   });
-  win.webContents.on("will-navigate", (e, url) => {
-    if (url !== win.webContents.getURL()) e.preventDefault();
+  target.webContents.on("will-navigate", (event, url) => {
+    if (url !== target.webContents.getURL()) event.preventDefault();
   });
-
-  if (process.env.CINDER_DEV) {
-    win.loadURL("http://localhost:5173");
-    win.webContents.openDevTools({ mode: "detach" });
-  } else {
-    win.loadFile(path.join(__dirname, "dist", "index.html"));
-  }
-
-  win.once("ready-to-show", () => win.show());
-  win.webContents.on("render-process-gone", (_e, details) => {
-    if (details.reason === "clean-exit" || !win || win.isDestroyed()) return;
-    console.error("renderer gone:", details.reason);
-    win.webContents.reload();
-  });
-  win.on("maximize", () => {
-    win.webContents.send("window:state", true);
-    queueSave();
-  });
-  win.on("unmaximize", () => {
-    win.webContents.send("window:state", false);
-    queueSave();
-  });
-  win.on("resize", queueSave);
-  win.on("move", queueSave);
-  win.on("close", saveState);
-}
-
-function openExternal(url) {
-  try {
-    const u = new URL(String(url));
-    if (u.protocol === "http:" || u.protocol === "https:") return shell.openExternal(u.href);
-  } catch {}
-}
-
-function appMenu() {
-  if (process.platform !== "darwin") return null;
-  return Menu.buildFromTemplate([
-    { role: "appMenu" },
-    {
-      label: "Edit",
-      submenu: [
-        { role: "undo" },
-        { role: "redo" },
-        { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "selectAll" }
-      ]
-    },
-    {
-      label: "View",
-      submenu: [
-        {
-          label: "Rescan",
-          accelerator: "CmdOrCtrl+R",
-          click: () => win && !win.isDestroyed() && win.webContents.send("menu:rescan")
-        },
-        { type: "separator" },
-        { role: "togglefullscreen" }
-      ]
-    },
-    {
-      role: "windowMenu"
+  target.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  target.webContents.session.setPermissionCheckHandler(() => false);
+  let recovered = false;
+  target.webContents.on("render-process-gone", (_event, details) => {
+    console.error("Renderer stopped:", details.reason);
+    if (details.reason !== "clean-exit" && !target.isDestroyed() && !recovered) {
+      recovered = true;
+      target.reload();
     }
-  ]);
-}
-
-ipcMain.handle("window:minimize", () => win && win.minimize());
-ipcMain.handle("window:toggle-maximize", () => {
-  if (!win) return false;
-  if (win.isMaximized()) win.unmaximize();
-  else win.maximize();
-  return win.isMaximized();
-});
-ipcMain.handle("window:close", () => win && win.close());
-ipcMain.handle("window:is-maximized", () => (win ? win.isMaximized() : false));
-
-ipcMain.on("theme:background", (_e, bg) => {
-  if (typeof bg === "string" && /^#[0-9a-f]{3,8}$/i.test(bg) && bg !== state.bg) {
-    state.bg = bg;
-    queueSave();
-  }
-});
-
-let nextJob = 1;
-
-function createPool(serviceName) {
-  const pool = { proc: null, jobs: new Map() };
-
-  pool.settleAll = (make) => {
-    for (const job of pool.jobs.values()) job.resolve(make(job));
-    pool.jobs.clear();
-  };
-
-  pool.ensure = () => {
-    if (pool.proc) return pool.proc;
-    const proc = utilityProcess.fork(path.join(__dirname, "main", "scan-worker.js"), [], {
-      serviceName,
-      execArgv: ["--max-old-space-size=4096"]
-    });
-    pool.proc = proc;
-    proc.on("message", (msg) => {
-      if (!msg || typeof msg !== "object") return;
-      const job = pool.jobs.get(msg.id);
-      if (!job) return;
-      if (msg.type === "progress") {
-        if (win && !win.isDestroyed()) win.webContents.send("usage:progress", msg.progress);
-        return;
-      }
-      pool.jobs.delete(msg.id);
-      if (msg.type === "done") job.resolve(msg.result);
-      else job.resolve({ ...job.fallback, error: msg.message });
-    });
-    proc.on("exit", (code) => {
-      if (pool.proc !== proc) return;
-      pool.proc = null;
-      const message = `Scan worker exited unexpectedly (code ${code})`;
-      pool.settleAll((job) => ({ ...job.fallback, error: message }));
-    });
-    return proc;
-  };
-
-  pool.run = (payload, fallback) =>
-    new Promise((resolve) => {
-      const id = nextJob++;
-      pool.jobs.set(id, { resolve, fallback });
-      pool.ensure().postMessage({ id, ...payload });
-    });
-
-  pool.stop = () => {
-    if (!pool.proc) return false;
-    const proc = pool.proc;
-    pool.proc = null;
-    proc.kill();
-    pool.settleAll(() => ({ cancelled: true }));
-    return true;
-  };
-
-  return pool;
-}
-
-const scanPool = createPool("cinder-scan");
-const callsPool = createPool("cinder-calls");
-
-function runScan(kind, cacheDir, fallback) {
-  const pool = kind === "calls" ? callsPool : scanPool;
-  return pool.run({ kind, cacheDir }, fallback);
-}
-
-function stopWorker() {
-  return scanPool.stop();
-}
-
-let scanning = null;
-ipcMain.handle("usage:collect", () => {
-  if (scanning) return scanning;
-  const dir = app.getPath("userData");
-  scanning = runScan("collect", dir, { entries: [], sources: [] })
-    .then((res) => {
-      if (res && !res.cancelled && !res.error) writeSnapshot(dir, { usage: res });
-      return res;
-    })
-    .finally(() => {
-      scanning = null;
-    });
-  return scanning;
-});
-
-ipcMain.handle("usage:cancel", () => stopWorker());
-
-ipcMain.handle("snapshot:info", () => snapshotInfo(app.getPath("userData")));
-ipcMain.handle("snapshot:usage", () => {
-  const snap = readSnapshot(app.getPath("userData"));
-  return snap && snap.usage ? snap.usage : null;
-});
-ipcMain.handle("snapshot:calls", () => {
-  const snap = readSnapshot(app.getPath("userData"));
-  return snap && snap.calls ? snap.calls : null;
-});
-ipcMain.handle("snapshot:clear", () => clearSnapshot(app.getPath("userData")));
-
-let callsScanning = null;
-ipcMain.handle("usage:calls", () => {
-  if (callsScanning) return callsScanning;
-  const dir = app.getPath("userData");
-  callsScanning = runScan("calls", dir, {
-    sources: {},
-    installed: { skills: [], mcp: {} },
-    scannedAt: new Date().toISOString()
-  })
-    .then((res) => {
-      if (res && !res.cancelled && !res.error) writeSnapshot(dir, { calls: res });
-      return res;
-    })
-    .finally(() => {
-      callsScanning = null;
-    });
-  return callsScanning;
-});
-
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
   });
-
+  for (const event of ["maximize", "unmaximize"])
+    target.on(event, () => {
+      target.webContents.send("window:state", target.isMaximized());
+      scheduleSave();
+    });
+  for (const event of ["move", "resize"]) target.on(event, scheduleSave);
+  target.on("close", saveWindow);
+  target.on("closed", () => {
+    clearTimeout(saveTimer);
+    window = null;
+  });
+  target.once("ready-to-show", () => target.show());
+  if (process.env.CINDER_DEV === "1") {
+    void target.loadURL("http://127.0.0.1:5173");
+    target.webContents.openDevTools({ mode: "detach" });
+  } else void target.loadFile(path.join(__dirname, "dist", "index.html"));
+}
+function installMenu() {
+  if (process.platform !== "darwin") {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      { role: "appMenu" },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" }
+        ]
+      },
+      {
+        label: "View",
+        submenu: [
+          { label: "Rescan", accelerator: "CmdOrCtrl+R", click: () => current()?.webContents.send("menu:rescan") },
+          { role: "togglefullscreen" }
+        ]
+      },
+      { role: "windowMenu" }
+    ])
+  );
+}
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on("second-instance", () => {
+    const target = current();
+    if (!target) return;
+    if (target.isMinimized()) target.restore();
+    target.focus();
+  });
   app.whenReady().then(() => {
     if (process.platform === "win32") app.setAppUserModelId("app.local.cinder");
-    Menu.setApplicationMenu(appMenu());
-    loadState();
+    state = normalizeWindowState(json(stateFile(), {}));
+    installMenu();
     createWindow();
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      if (!current()) createWindow();
     });
   });
-
-  app.on("will-quit", () => {
-    scanPool.stop();
-    callsPool.stop();
-  });
-
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+  app.on("will-quit", () => {
+    clearTimeout(saveTimer);
+    usagePool.stop();
+    callsPool.stop();
+    limitsPool.stop();
+    accountsPool.stop();
   });
 }

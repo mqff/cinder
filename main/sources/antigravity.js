@@ -1,305 +1,130 @@
-const fs = require("fs");
-const path = require("path");
-const { envDirs, HOME } = require("../normalize");
-const { queryAll } = require("../sqlite");
+const path = require("node:path");
+const { sourceRoots } = require("../source-paths");
+const { files, basename } = require("../io");
+const { queryLive } = require("../sqlite");
 const { hasRate } = require("../pricing");
-
-const ROUTING_SUFFIX = /-(a|b|low|medium|high|default)$/;
-
-const canonCache = new Map();
-
-function canonical(model, provider) {
-  const hit = canonCache.get(model);
-  if (hit !== undefined) return hit;
-  let out = model;
-  if (!hasRate(model, provider)) {
-    let stripped = model;
-    while (ROUTING_SUFFIX.test(stripped)) {
-      stripped = stripped.replace(ROUTING_SUFFIX, "");
-      if (hasRate(stripped, provider)) {
-        out = stripped;
-        break;
-      }
+function fields(bytes) {
+  const output = [];
+  let offset = 0;
+  function integer() {
+    let result = 0,
+      factor = 1;
+    for (let n = 0; n < 10 && offset < bytes.length; n++) {
+      const byte = bytes[offset++];
+      result += (byte & 127) * factor;
+      if (byte < 128) return result;
+      factor *= 128;
     }
+    throw new Error("Truncated protobuf integer");
   }
-  canonCache.set(model, out);
-  return out;
-}
-
-const WIRE_VARINT = 0;
-const WIRE_FIXED64 = 1;
-const WIRE_BYTES = 2;
-const WIRE_FIXED32 = 5;
-
-function reader(buf) {
-  return { buf, pos: 0 };
-}
-
-function varint(r) {
-  let value = 0;
-  let shift = 1;
-  for (let i = 0; i < 10; i++) {
-    if (r.pos >= r.buf.length) return null;
-    const byte = r.buf[r.pos++];
-    value += (byte & 0x7f) * shift;
-    if ((byte & 0x80) === 0) return value;
-    shift *= 128;
-  }
-  return null;
-}
-
-function nextField(r) {
-  if (r.pos >= r.buf.length) return null;
-  const tag = varint(r);
-  if (tag === null) return null;
-  const field = Math.floor(tag / 8);
-  const wire = tag & 7;
-  if (field === 0) return null;
-  if (wire === WIRE_VARINT) {
-    const v = varint(r);
-    return v === null ? null : { field, wire, value: v };
-  }
-  if (wire === WIRE_BYTES) {
-    const len = varint(r);
-    if (len === null || r.pos + len > r.buf.length) return null;
-    const bytes = r.buf.subarray(r.pos, r.pos + len);
-    r.pos += len;
-    return { field, wire, bytes };
-  }
-  if (wire === WIRE_FIXED64) {
-    if (r.pos + 8 > r.buf.length) return null;
-    r.pos += 8;
-    return { field, wire };
-  }
-  if (wire === WIRE_FIXED32) {
-    if (r.pos + 4 > r.buf.length) return null;
-    r.pos += 4;
-    return { field, wire };
-  }
-  return null;
-}
-
-function text(bytes) {
   try {
-    const v = Buffer.from(bytes).toString("utf8").trim();
-    return v ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-function timestamp(bytes) {
-  const r = reader(bytes);
-  let seconds = null;
-  let nanos = 0;
-  let f;
-  while ((f = nextField(r))) {
-    if (f.field === 1 && f.wire === WIRE_VARINT) seconds = f.value;
-    else if (f.field === 2 && f.wire === WIRE_VARINT) nanos = f.value;
-  }
-  if (seconds === null || seconds <= 0) return null;
-  return seconds * 1000 + Math.floor(nanos / 1e6);
-}
-
-function modelUsage(bytes) {
-  const u = {
-    modelId: 0,
-    input: 0,
-    output: 0,
-    cacheWrite: 0,
-    cacheRead: 0,
-    thinking: 0,
-    response: 0,
-    messageId: null,
-    responseId: null,
-    providerMessageId: null
-  };
-  const r = reader(bytes);
-  let f;
-  while ((f = nextField(r))) {
-    if (f.wire === WIRE_VARINT) {
-      if (f.field === 1) u.modelId = f.value;
-      else if (f.field === 2) u.input = f.value;
-      else if (f.field === 3) u.output = f.value;
-      else if (f.field === 4) u.cacheWrite = f.value;
-      else if (f.field === 5) u.cacheRead = f.value;
-      else if (f.field === 9) u.thinking = f.value;
-      else if (f.field === 10) u.response = f.value;
-    } else if (f.wire === WIRE_BYTES) {
-      if (f.field === 7) u.messageId = text(f.bytes);
-      else if (f.field === 11) u.responseId = text(f.bytes);
-      else if (f.field === 12) u.providerMessageId = text(f.bytes);
-    }
-  }
-  return u;
-}
-
-function retryUsage(bytes) {
-  const r = reader(bytes);
-  let f;
-  while ((f = nextField(r))) {
-    if (f.field === 2 && f.wire === WIRE_BYTES) return modelUsage(f.bytes);
-  }
-  return null;
-}
-
-function totalOutput(u) {
-  return u.output > 0 ? u.output : u.thinking + u.response;
-}
-
-function hasTokens(u) {
-  return u.input > 0 || u.cacheRead > 0 || u.cacheWrite > 0 || totalOutput(u) > 0;
-}
-
-function identity(u) {
-  return u.responseId || u.providerMessageId || u.messageId || null;
-}
-
-function parseStep(bytes) {
-  const step = { ts: null, usages: [] };
-  let startedAt = null;
-  const r = reader(bytes);
-  let f;
-  while ((f = nextField(r))) {
-    if (f.wire !== WIRE_BYTES) continue;
-    if (f.field === 1) step.ts = timestamp(f.bytes);
-    else if (f.field === 32) startedAt = timestamp(f.bytes);
-    else if (f.field === 9) step.usages.push(modelUsage(f.bytes));
-    else if (f.field === 28) {
-      const u = retryUsage(f.bytes);
-      if (u) step.usages.push(u);
-    }
-  }
-  if (step.ts === null) step.ts = startedAt;
-  return step;
-}
-
-function chatModelMetadata(bytes) {
-  const gen = { model: null, ts: null, usages: [] };
-  const r = reader(bytes);
-  let f;
-  while ((f = nextField(r))) {
-    if (f.wire !== WIRE_BYTES) continue;
-    if (f.field === 4) gen.usages.push(modelUsage(f.bytes));
-    else if (f.field === 17) {
-      const u = retryUsage(f.bytes);
-      if (u) gen.usages.push(u);
-    } else if (f.field === 19) gen.model = text(f.bytes);
-    else if (f.field === 9) {
-      const inner = reader(f.bytes);
-      let g;
-      while ((g = nextField(inner))) {
-        if (g.field === 4 && g.wire === WIRE_BYTES) gen.ts = timestamp(g.bytes);
+    while (offset < bytes.length) {
+      const tag = integer(),
+        number = Math.floor(tag / 8),
+        wire = tag & 7;
+      if (!number) break;
+      if (wire === 0) output.push({ number, value: integer() });
+      else {
+        const size = wire === 2 ? integer() : wire === 1 ? 8 : wire === 5 ? 4 : -1;
+        if (size < 0 || offset + size > bytes.length) break;
+        output.push({ number, bytes: bytes.subarray(offset, offset + size) });
+        offset += size;
       }
-    }
-  }
-  return gen;
-}
-
-function parseGeneration(bytes) {
-  const found = [];
-  const r = reader(bytes);
-  let f;
-  while ((f = nextField(r))) {
-    if (f.wire !== WIRE_BYTES) continue;
-    const gen = chatModelMetadata(f.bytes);
-    if (gen.model && gen.usages.some((u) => identity(u))) found.push(gen);
-  }
-  return found;
-}
-
-function providerFor(model) {
-  const m = String(model || "").toLowerCase();
-  if (m.startsWith("gemini") || m.startsWith("gemma")) return "gemini";
-  if (m.startsWith("claude")) return "anthropic";
-  if (m.startsWith("gpt") || m.startsWith("o1") || m.startsWith("o3")) return "openai";
-  return "antigravity";
-}
-
-function dirs() {
-  const env = envDirs("ANTIGRAVITY_DATA_DIR");
-  if (env.length) return [...new Set(env)];
-  return [
-    path.join(HOME, ".gemini", "antigravity-cli"),
-    path.join(HOME, ".gemini", "antigravity")
-  ].filter((d) => fs.existsSync(path.join(d, "conversations")));
-}
-
-function dbFiles(dir) {
-  const out = [];
-  try {
-    for (const name of fs.readdirSync(path.join(dir, "conversations"))) {
-      if (name.endsWith(".db")) out.push(path.join(dir, "conversations", name));
     }
   } catch {}
-  return out.sort();
+  return output;
 }
-
-function fromHex(h) {
-  return Buffer.from(String(h), "hex");
+const text = (bytes) => bytes?.toString("utf8").trim();
+function time(bytes) {
+  const values = new Map(fields(bytes || Buffer.alloc(0)).map((f) => [f.number, f.value]));
+  return values.get(1) ? values.get(1) * 1000 + Math.floor((values.get(2) || 0) / 1e6) : null;
 }
-
-async function collect(cx) {
-  for (const dir of dirs()) {
-    for (const db of dbFiles(dir)) {
-      const session = path.basename(db, ".db");
-      await cx.scanFile("antigravity", dir, db, async (out) => {
-        const genRows = await queryAll(
-          db,
-          "SELECT hex(data) AS d FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx"
-        );
-        if (!genRows) throw new Error("sqlite unavailable");
-
-        const models = new Map();
-        const generations = [];
-        for (const row of genRows) {
-          for (const gen of parseGeneration(fromHex(row.d))) {
-            generations.push(gen);
-            for (const u of gen.usages) {
-              const id = identity(u);
-              if (id) models.set(id, gen.model);
-            }
-          }
-        }
-
-        const stepRows = await queryAll(
-          db,
-          "SELECT hex(metadata) AS m FROM steps WHERE metadata IS NOT NULL ORDER BY idx"
-        );
-
-        const records = [];
-        for (const row of stepRows || []) {
-          const step = parseStep(fromHex(row.m));
-          for (const u of step.usages) records.push({ ts: step.ts, u });
-        }
-        for (const gen of generations) {
-          for (const u of gen.usages) records.push({ ts: gen.ts, u });
-        }
-
-        for (const { ts, u } of records) {
-          if (!hasTokens(u)) continue;
-          const id = identity(u);
-          const raw = (id && models.get(id)) || `antigravity-model-${u.modelId}`;
-          const provider = providerFor(raw);
-          const model = canonical(raw, provider);
-          out.add({
-            source: "antigravity",
-            ts: ts || null,
-            model,
-            provider,
-            project: "antigravity",
-            session,
-            dedup: id || undefined,
-            input: u.input,
-            output: totalOutput(u),
-            cacheWrite: u.cacheWrite,
-            cacheRead: u.cacheRead,
-            reasoning: 0
-          });
-        }
-      });
+function usage(bytes) {
+  const values = new Map(fields(bytes).map((f) => [f.number, f]));
+  const value = (n) => values.get(n)?.value || 0;
+  return {
+    modelId: value(1),
+    input: value(2),
+    output: value(3) || value(9) + value(10),
+    cacheWrite: value(4),
+    cacheRead: value(5),
+    identity: text(values.get(11)?.bytes) || text(values.get(12)?.bytes) || text(values.get(7)?.bytes)
+  };
+}
+function decode(bytes, generation = false) {
+  const record = { ts: null, model: null, usages: [] };
+  for (const field of fields(bytes)) {
+    if (!field.bytes) continue;
+    if (field.number === (generation ? 4 : 9)) record.usages.push(usage(field.bytes));
+    if (field.number === (generation ? 17 : 28)) {
+      const inner = fields(field.bytes).find((f) => f.number === 2 && f.bytes);
+      if (inner) record.usages.push(usage(inner.bytes));
+    }
+    if (!generation && [1, 32].includes(field.number)) record.ts ||= time(field.bytes);
+    if (generation && field.number === 19) record.model = text(field.bytes);
+    if (generation && field.number === 9) {
+      const timestamp = fields(field.bytes).find((f) => f.number === 4 && f.bytes);
+      if (timestamp) record.ts = time(timestamp.bytes);
     }
   }
+  return record;
 }
-
-module.exports = { id: "antigravity", label: "Antigravity", collect };
+async function collect(collector) {
+  const databases = sourceRoots("antigravity").flatMap((root) =>
+    files(path.join(root, "conversations"), (f) => f.endsWith(".db"))
+  );
+  for (const file of databases)
+    await collector.scanFile("antigravity", path.dirname(file), file, async (out) => {
+      const generations = await queryLive(
+        file,
+        "SELECT hex(data) AS d FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx"
+      );
+      const steps = await queryLive(
+        file,
+        "SELECT hex(metadata) AS m FROM steps WHERE metadata IS NOT NULL ORDER BY idx"
+      );
+      if (!generations && !steps) throw new Error("Unable to read Antigravity database");
+      const records = [],
+        models = new Map();
+      for (const row of generations || [])
+        for (const field of fields(Buffer.from(row.d, "hex"))) {
+          if (!field.bytes) continue;
+          const record = decode(field.bytes, true);
+          if (!record.model) continue;
+          for (const tokens of record.usages) if (tokens.identity) models.set(tokens.identity, record.model);
+          records.push(record);
+        }
+      for (const row of steps || []) records.push(decode(Buffer.from(row.m, "hex")));
+      for (const record of records)
+        for (const tokens of record.usages) {
+          let model = models.get(tokens.identity) || record.model || `antigravity-model-${tokens.modelId}`;
+          const provider = /^claude/.test(model)
+            ? "anthropic"
+            : /^gemini|^gemma/.test(model)
+              ? "gemini"
+              : /^gpt|^o[134]/.test(model)
+                ? "openai"
+                : "antigravity";
+          if (!hasRate(model, provider)) {
+            let candidate = model;
+            while (/-(a|b|low|medium|high|default)$/.test(candidate)) {
+              candidate = candidate.replace(/-(a|b|low|medium|high|default)$/, "");
+              if (hasRate(candidate, provider)) {
+                model = candidate;
+                break;
+              }
+            }
+          }
+          out.add({
+            ...tokens,
+            source: "antigravity",
+            provider,
+            model,
+            ts: record.ts,
+            session: basename(file).replace(/\.db$/, ""),
+            dedup: tokens.identity
+          });
+        }
+    });
+}
+module.exports = { id: "antigravity", label: "Antigravity", collect, fields, decode };

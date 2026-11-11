@@ -1,15 +1,17 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { envDirs, compactEntries, num } = require("../main/normalize");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { compactEntries } = require("../main/normalize");
+const { envDirs, num } = require("../main/io");
 const { writeJsonFile } = require("../main/jsonfile");
 const { costParts } = require("../main/pricing");
 
 describe("envDirs", () => {
   it("splits on comma and semicolon", () => {
-    process.env.CINDER_TEST_DIRS = process.platform === "win32" ? "C:\\Users\\me\\.claude;D:\\logs" : "/home/a/.claude,/home/b/.codex";
+    process.env.CINDER_TEST_DIRS =
+      process.platform === "win32" ? "C:\\Users\\me\\.claude;D:\\logs" : "/home/a/.claude,/home/b/.codex";
     const dirs = envDirs("CINDER_TEST_DIRS");
     delete process.env.CINDER_TEST_DIRS;
     if (process.platform === "win32") {

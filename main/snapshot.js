@@ -1,57 +1,43 @@
-const fs = require("fs");
-const path = require("path");
+const path = require("node:path");
+const { json } = require("./io");
 const { writeJsonFile } = require("./jsonfile");
 const { compactEntries, USAGE_VERSION } = require("./normalize");
-
-const FILE = "scan-snapshot.json";
-
-function snapshotPath(dir) {
-  return path.join(dir, FILE);
-}
-
-let cached;
-
+const { validUsage, validCalls } = require("./contracts");
+const memory = new Map();
+const location = (dir) => path.join(dir, "scan-snapshot.json");
 function readSnapshot(dir) {
-  if (cached !== undefined) return cached;
-  cached = null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(snapshotPath(dir), "utf8"));
-    if (raw && typeof raw === "object") cached = raw;
-  } catch {}
-  const usage = cached && cached.usage;
-  if (usage && usage.v !== USAGE_VERSION && Array.isArray(usage.entries)) {
-    usage.entries.sort((a, b) => a.t - b.t);
-    usage.entries = compactEntries(usage.entries);
-    usage.v = USAGE_VERSION;
+  const file = location(dir);
+  if (memory.has(file)) return memory.get(file);
+  let saved = json(file);
+  if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+    if (!validUsage(saved.usage)) delete saved.usage;
+    if (!validCalls(saved.calls)) delete saved.calls;
+    if (!saved.usage && !saved.calls) saved = null;
+  } else saved = null;
+  if (saved?.usage && saved.usage.v !== USAGE_VERSION) {
+    saved.usage = { ...saved.usage, v: USAGE_VERSION, entries: compactEntries(saved.usage.entries) };
   }
-  return cached;
+  memory.set(file, saved);
+  return saved;
 }
-
 function snapshotInfo(dir) {
-  const snap = readSnapshot(dir);
-  if (!snap || !snap.usage) return null;
-  const usage = snap.usage;
+  const snapshot = readSnapshot(dir);
+  if (!snapshot?.usage) return null;
   return {
-    savedAt: snap.savedAt || usage.scannedAt || "",
-    entries: Array.isArray(usage.entries) ? usage.entries.reduce((sum, e) => sum + (e.n || 1), 0) : 0,
-    sources: Array.isArray(usage.sources) ? usage.sources.length : 0,
-    hasCalls: Boolean(snap.calls)
+    savedAt: snapshot.usage.scannedAt || snapshot.savedAt || "",
+    entries: snapshot.usage.entries.reduce((sum, entry) => sum + (entry.n || 1), 0),
+    sources: snapshot.usage.sources.length,
+    hasCalls: Boolean(snapshot.calls)
   };
 }
-
 function writeSnapshot(dir, patch) {
-  const next = { ...(readSnapshot(dir) || {}), ...patch, savedAt: new Date().toISOString() };
+  const next = { ...readSnapshot(dir), ...patch, savedAt: new Date().toISOString() };
   try {
-    writeJsonFile(snapshotPath(dir), next);
-    cached = next;
-  } catch {}
+    writeJsonFile(location(dir), next);
+    memory.set(location(dir), next);
+    return true;
+  } catch {
+    return false;
+  }
 }
-
-function clearSnapshot(dir) {
-  cached = null;
-  try {
-    fs.rmSync(snapshotPath(dir), { force: true });
-  } catch {}
-}
-
-module.exports = { readSnapshot, snapshotInfo, writeSnapshot, clearSnapshot };
+module.exports = { readSnapshot, snapshotInfo, writeSnapshot };

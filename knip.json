@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip/schema.json",
+  "entry": [
+    "preload.js",
+    "main/scan-worker.js",
+    "main/sqlite-reader.js",
+    "tools/*.js",
+    "tools/electron-smoke.cjs",
+    "test/*.test.{js,mts}"
+  ],
+  "project": ["main/**/*.js", "src/**/*.{ts,tsx}", "tools/*.{js,cjs}", "test/*.{js,cjs,mts}"]
+}

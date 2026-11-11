@@ -1,50 +1,38 @@
+const number = new Intl.NumberFormat("en-US");
+const short = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 });
+const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+const formatMoney = (value: number) =>
+  value > 0 && value < 0.01
+    ? value < 0.0001
+      ? "<$0.0001"
+      : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(value)
+    : money.format(value || 0);
 export const fmt = {
-  compact(n: number): string {
-    n = n || 0;
-    const a = Math.abs(n);
-    if (a >= 1e12) return (n / 1e12).toFixed(2) + "T";
-    if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
-    if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
-    if (a >= 1e3) return (n / 1e3).toFixed(1) + "K";
-    return String(Math.round(n));
+  plan: (value: string) =>
+    value
+      .replace(/[_-]+/g, " ")
+      .replace(/\b(?:api|ai)\b/gi, (word) => word.toUpperCase())
+      .replace(/\b[a-z]/g, (letter) => letter.toUpperCase()),
+  cost: (value: { cost: number; unpriced?: number }) =>
+    value.unpriced ? (value.cost > 0 ? `≥${formatMoney(value.cost)}` : "Unpriced") : formatMoney(value.cost),
+  int: (value: number) => number.format(Math.round(value || 0)),
+  compact: (value: number) => short.format(value || 0),
+  usd: formatMoney,
+  pct: (value: number) =>
+    new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(value || 0),
+  dayKey(value: Date | string | number) {
+    const date = new Date(value);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   },
-  int(n: number): string {
-    return Math.round(n || 0).toLocaleString("en-US");
-  },
-  usd(n: number): string {
-    n = n || 0;
-    if (n >= 1000) return "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-    if (n >= 100) return "$" + n.toFixed(1);
-    return "$" + n.toFixed(2);
-  },
-  pct(n: number): string {
-    return (n * 100).toFixed(n >= 0.1 ? 0 : 1) + "%";
-  },
-  dayKey(d: Date | string | number): string {
-    const x = new Date(d);
-    return (
-      x.getFullYear() +
-      "-" +
-      String(x.getMonth() + 1).padStart(2, "0") +
-      "-" +
-      String(x.getDate()).padStart(2, "0")
-    );
-  },
-  dayLabel(key: string): string {
-    return new Date(key + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  },
-  monthShort(d: Date): string {
-    return d.toLocaleDateString("en-US", { month: "short" });
-  },
-  modelShort(m: string): string {
-    if (!m) return "unknown";
-    if (m === "cursor-auto" || m === "default") return "Auto";
-    return m
-      .replace(/^claude-/, "")
-      .replace(/-\d{8}$/, "")
-      .replace(/^anthropic\//, "")
-      .replace(/-high-thinking$/, "")
-      .replace(/-thinking$/, "")
-      .replace(/-build$/, "");
-  }
+  dayLabel: (key: string) =>
+    new Date(key + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+  monthShort: (date: Date) => date.toLocaleDateString("en-US", { month: "short" }),
+  modelShort: (model: string) =>
+    model === "cursor-auto" || model === "default"
+      ? "Auto"
+      : (model || "unknown")
+          .replace(/^anthropic\//, "")
+          .replace(/^claude-/, "")
+          .replace(/-\d{8}$/, "")
+          .replace(/-(?:high-thinking|thinking|build)$/, "")
 };

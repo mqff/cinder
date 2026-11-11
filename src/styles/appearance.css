@@ -1,0 +1,98 @@
+.appearance-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.theme-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 10px;
+}
+.theme-search:focus-within {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 2px;
+}
+.theme-search input {
+  width: 160px;
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+}
+.theme-gallery {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.theme-card {
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-align: left;
+}
+.theme-card[aria-pressed="true"] {
+  border-color: var(--brand-2);
+  box-shadow: 0 0 0 1px var(--brand-2);
+}
+.theme-card:hover {
+  background: var(--muted);
+}
+.theme-preview {
+  display: flex;
+  height: 74px;
+  background: var(--preview-bg);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--preview-muted);
+}
+.theme-preview-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 26%;
+  padding: 12px 5px;
+  background: var(--preview-surface);
+  border-right: 1px solid var(--preview-muted);
+}
+.theme-preview-sidebar i {
+  height: 3px;
+  background: var(--preview-muted);
+}
+.theme-preview-sidebar i:first-child {
+  background: var(--preview-accent);
+}
+.theme-preview-content {
+  flex: 1;
+  padding: 12px;
+}
+.theme-preview-content > i {
+  display: block;
+  width: 48%;
+  height: 3px;
+  background: var(--preview-fg);
+}
+.theme-preview-content > span {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  height: 38px;
+  margin-top: 6px;
+  border-bottom: 1px solid var(--preview-muted);
+}
+.theme-preview-content > span i {
+  flex: 1;
+  border-radius: 1px 1px 0 0;
+}
+.theme-card-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 4px 4px;
+  font-size: 11px;
+}

@@ -1,368 +1,236 @@
-import { useMemo, useState, useId, type MouseEvent } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { ICON } from "@/lib/icons";
-import { cn } from "@/lib/utils";
-import { fmt } from "@/lib/format";
-import { provColor, provLabel } from "@/lib/providers";
+import { ContextChart } from "@/components/charts/ContextChart";
+import { useDeferredValue, useMemo, useState } from "react";
 import type { Entry } from "@/lib/types";
-import { Panel, StatCard } from "@/components/Primitives";
-import { useMeasure } from "@/hooks/useMeasure";
+import { totalsOf } from "@/lib/aggregate";
+import { fmt } from "@/lib/format";
+import { Panel, Stat, Empty, Metadata } from "@/components/Primitives";
+import { Choice } from "@/components/Choice";
+import { Glyph } from "@/components/Glyph";
+import { sourceLabel } from "@/lib/navigation";
+import { ExpandableList } from "@/components/ExpandableList";
 
-const LIST_CAP = 150;
-const TURN_CAP = 200;
-
-interface SessionInfo {
-  id: string;
-  project: string;
-  source: string;
-  model: string;
-  start: number;
-  end: number;
-  cost: number;
-  tokens: number;
-  input: number;
-  output: number;
-  cacheWrite: number;
-  cacheRead: number;
-  requests: number;
-  entries: Entry[];
-}
-
-function ContextGrowthChart({ session }: { session: SessionInfo }) {
-  const { ref, width } = useMeasure<HTMLDivElement>();
-  const [hover, setHover] = useState<{ i: number; x: number; y: number } | null>(null);
-  const gid = useId().replace(/:/g, "");
-  const H = 200;
-  const PAD = { l: 55, r: 15, t: 15, b: 25 };
-  const W = width || 500;
-
-  const values = session.entries.map((e) => e.input + e.cacheWrite + e.cacheRead);
-  const max = Math.max(1, ...values);
-  const n = values.length;
-
-  const plotW = W - PAD.l - PAD.r;
-  const plotH = H - PAD.t - PAD.b;
-
-  const x = (i: number) => (n <= 1 ? PAD.l + plotW / 2 : PAD.l + (i * plotW) / (n - 1));
-  const y = (v: number) => PAD.t + plotH * (1 - v / max);
-
-  const pts = values.map((v, i) => ({ x: x(i), y: y(v) }));
-
-  let line = "";
-  if (pts.length > 0) {
-    line = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 1; i < pts.length; i++) line += ` L ${pts[i].x} ${pts[i].y}`;
-  }
-  const area = line ? `${line} L ${x(n - 1)} ${H - PAD.b} L ${x(0)} ${H - PAD.b} Z` : "";
-
-  function onMove(e: MouseEvent) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const relX = ((e.clientX - rect.left) / (rect.width || W)) * W;
-    let i = n <= 1 ? 0 : Math.round(((relX - PAD.l) / plotW) * (n - 1));
-    i = Math.max(0, Math.min(n - 1, i));
-    setHover({ i, x: e.clientX, y: e.clientY });
-  }
-
-  const hd = hover ? session.entries[hover.i] : null;
-  const hVal = hd ? hd.input + hd.cacheWrite + hd.cacheRead : 0;
-
-  return (
-    <div ref={ref} className="relative w-full" onMouseLeave={() => setHover(null)}>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} onMouseMove={onMove} className="overflow-visible">
-        <defs>
-          <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--brand)" stopOpacity={0.25} />
-            <stop offset="100%" stopColor="var(--brand)" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
-        {[0, 0.5, 1].map((g) => {
-          const yy = y(max * g);
-          return (
-            <g key={g}>
-              <line x1={PAD.l} y1={yy} x2={W - PAD.r} y2={yy} stroke="var(--border)" strokeDasharray="2 4" strokeOpacity={0.5} />
-              <text x={PAD.l - 8} y={yy + 3.5} textAnchor="end" className="fill-muted-foreground" fontSize={10}>
-                {fmt.compact(max * g)}
-              </text>
-            </g>
-          );
-        })}
-        {area && <path d={area} fill={`url(#${gid})`} />}
-        {line && <path d={line} fill="none" stroke="var(--brand)" strokeWidth={2} />}
-        {n > 1 &&
-          [0, Math.floor(n / 2), n - 1].map((i) => (
-            <text key={i} x={x(i)} y={H - 6} textAnchor="middle" className="fill-muted-foreground" fontSize={10}>
-              {`Turn ${i + 1}`}
-            </text>
-          ))}
-        {hd && (
-          <>
-            <line x1={x(hover!.i)} y1={PAD.t} x2={x(hover!.i)} y2={H - PAD.b} stroke="var(--brand)" strokeWidth={1} strokeOpacity={0.4} />
-            <circle cx={x(hover!.i)} cy={y(hVal)} r={4} fill="var(--brand)" stroke="var(--card)" strokeWidth={2} />
-          </>
-        )}
-      </svg>
-      {hd && (
-        <div
-          className="pointer-events-none absolute z-20 rounded-xl border border-border bg-popover p-2.5 text-[11.5px] shadow-lg"
-          style={{ left: Math.max(10, Math.min(W - 160, x(hover!.i) - 80)), top: 20 }}
-        >
-          <div className="mb-1 font-semibold text-foreground">Turn {hover!.i + 1}</div>
-          <div className="flex flex-col gap-0.5 text-muted-foreground">
-            <div>
-              Input: <span className="font-medium text-foreground">{fmt.int(hd.input)}</span>
-            </div>
-            <div>
-              Cache Read: <span className="font-medium text-foreground">{fmt.int(hd.cacheRead)}</span>
-            </div>
-            <div>
-              Cache Write: <span className="font-medium text-foreground">{fmt.int(hd.cacheWrite)}</span>
-            </div>
-            <div className="mt-1 border-t border-border pt-1">
-              Total: <span className="font-semibold text-foreground">{fmt.int(hVal)}</span>
-            </div>
-            <div>
-              Cost: <span className="font-semibold text-brand">{fmt.usd(hd.cost)}</span>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const SORTS = [
-  { id: "recent", label: "Recent", compare: (a: SessionInfo, b: SessionInfo) => b.end - a.end },
-  { id: "cost", label: "Cost", compare: (a: SessionInfo, b: SessionInfo) => b.cost - a.cost },
-  { id: "tokens", label: "Tokens", compare: (a: SessionInfo, b: SessionInfo) => b.tokens - a.tokens },
-  { id: "turns", label: "Turns", compare: (a: SessionInfo, b: SessionInfo) => b.requests - a.requests },
-  { id: "project", label: "Project", compare: (a: SessionInfo, b: SessionInfo) => a.project.localeCompare(b.project) }
-] as const;
-
-type SortId = (typeof SORTS)[number]["id"];
-
+const sortOptions = [
+  { value: "recent", label: "Most recent" },
+  { value: "cost", label: "Highest cost" },
+  { value: "tokens", label: "Most tokens" },
+  { value: "turns", label: "Most requests" },
+  { value: "project", label: "Project A–Z" }
+];
 export function Sessions({ entries }: { entries: Entry[] }) {
-  const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [sort, setSort] = useState<SortId>("recent");
-
+  const [query, setQuery] = useState(""),
+    [selected, setSelected] = useState("");
+  const [sort, setSort] = useState("cost");
+  const [recordSort, setRecordSort] = useState("tokens");
+  const search = useDeferredValue(query.trim().toLowerCase());
   const sessions = useMemo(() => {
-    const map = new Map<string, SessionInfo>();
-    for (const e of entries) {
-      const s = e.session || "unknown";
-      let info = map.get(s);
-      if (!info) {
-        info = {
-          id: s,
-          project: e.project,
-          source: e.source,
-          model: e.model,
-          start: e.t,
-          end: e.t,
-          cost: 0,
-          tokens: 0,
-          input: 0,
-          output: 0,
-          cacheWrite: 0,
-          cacheRead: 0,
-          requests: 0,
-          entries: []
-        };
-        map.set(s, info);
-      }
-      info.cost += e.cost;
-      info.tokens += e.input + e.output + e.cacheWrite + e.cacheRead;
-      info.input += e.input;
-      info.output += e.output;
-      info.cacheWrite += e.cacheWrite;
-      info.cacheRead += e.cacheRead;
-      info.requests += e.n ?? 1;
-      info.entries.push(e);
-      if (e.t < info.start) info.start = e.t;
-      if (e.t > info.end) info.end = e.t;
+    const groups = new Map<string, Entry[]>();
+    for (const entry of entries) {
+      const key = JSON.stringify([entry.source, entry.session]);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(entry);
     }
-    for (const info of map.values()) {
-      info.entries.sort((a, b) => a.t - b.t);
-      info.model = info.entries[info.entries.length - 1].model;
-    }
-    return [...map.values()].sort((a, b) => b.end - a.end);
+    return [...groups].map(([key, records]) => {
+      records.sort((a, b) => a.t - b.t);
+      const totals = totalsOf(records);
+      return {
+        key,
+        records,
+        sum: { totals, count: totals.requests },
+        first: records[0],
+        last: records[records.length - 1],
+        hasCost: totals.tokens > 0 || totals.cost > 0 || records.some((entry) => entry.costOrigin === "reported"),
+        search:
+          `${records[0].project} ${records[0].session} ${sourceLabel(records[0].source)} ${[...new Set(records.map((record) => record.model))].join(" ")}`.toLowerCase()
+      };
+    });
   }, [entries]);
-
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    const list = query
-      ? sessions.filter(
-          (s) =>
-            s.id.toLowerCase().includes(query) ||
-            s.project.toLowerCase().includes(query) ||
-            s.model.toLowerCase().includes(query)
-        )
-      : sessions;
-    const compare = (SORTS.find((s) => s.id === sort) ?? SORTS[0]).compare;
-    return [...list].sort(compare);
-  }, [sessions, search, sort]);
-
-  const visible = filtered.slice(0, LIST_CAP);
-
-  const active = useMemo(() => {
-    if (selectedId) {
-      const found = sessions.find((s) => s.id === selectedId);
-      if (found) return found;
-    }
-    return filtered.length ? filtered[0] : null;
-  }, [sessions, filtered, selectedId]);
-
-  const showAll = active !== null && expanded === active.id;
-  const turns = active ? (showAll ? active.entries : active.entries.slice(0, TURN_CAP)) : [];
-
+  const filtered = useMemo(
+    () =>
+      sessions
+        .filter((session) => session.search.includes(search))
+        .sort((a, b) =>
+          sort === "cost"
+            ? b.sum.totals.cost - a.sum.totals.cost
+            : sort === "tokens"
+              ? b.sum.totals.tokens - a.sum.totals.tokens
+              : sort === "turns"
+                ? b.sum.count - a.sum.count
+                : sort === "project"
+                  ? a.first.project.localeCompare(b.first.project)
+                  : b.last.t - a.last.t
+        ),
+    [sessions, search, sort]
+  );
+  const active = filtered.find((session) => session.key === selected) || filtered[0];
+  const records = useMemo(
+    () =>
+      [...(active?.records || [])].sort((a, b) =>
+        recordSort === "recent"
+          ? b.t - a.t
+          : recordSort === "cost"
+            ? b.cost - a.cost
+            : b.input + b.output + b.cacheRead + b.cacheWrite - (a.input + a.output + a.cacheRead + a.cacheWrite)
+      ),
+    [active, recordSort]
+  );
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr] xl:grid-cols-[360px_1fr]">
-      <div className="flex flex-col gap-3.5">
-        <div className="relative">
-          <input
-            type="text"
-            placeholder="Search sessions..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-xl border border-border bg-card px-3.5 py-2 pl-9 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:border-brand/40"
-          />
-          <HugeiconsIcon
-            icon={ICON.search}
-            size={14}
-            className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-foreground"
-          />
-        </div>
-
-        <div className="grid grid-cols-5 rounded-xl bg-card p-[3px] ring-1 ring-foreground/10">
-          {SORTS.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setSort(s.id)}
-              className={cn(
-                "rounded-lg px-1 py-1 text-center text-[11px] font-medium transition-colors",
-                s.id === sort ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex max-h-[70vh] flex-col gap-1.5 overflow-y-auto pr-1">
-          {visible.map((s) => {
-            const isSelected = active?.id === s.id;
-            return (
-              <button
-                key={s.id}
-                onClick={() => setSelectedId(s.id)}
-                className={cn(
-                  "flex flex-col gap-1 rounded-2xl border p-3 text-left transition-all",
-                  isSelected
-                    ? "border-brand/35 bg-brand/[0.08] text-foreground"
-                    : "border-foreground/5 bg-card text-muted-foreground hover:bg-accent/40"
-                )}
-              >
-                <div className="flex w-full items-center justify-between">
-                  <span className="truncate text-[13.5px] font-semibold text-foreground">{s.project || "untitled"}</span>
-                  <span className="text-[12px] font-semibold text-brand">{s.tokens ? fmt.usd(s.cost) : "—"}</span>
-                </div>
-                <div className="truncate font-mono text-[11px] opacity-85">{s.id}</div>
-                <div className="mt-1.5 flex w-full items-center justify-between text-[11.5px] font-medium">
-                  <span className="flex items-center gap-1.5 rounded bg-muted/60 px-1.5 py-0.5 text-[10px] font-semibold text-foreground">
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: provColor(s.source) }} />
-                    {provLabel(s.source)}
-                  </span>
-                  <span>
-                    {s.requests} {s.requests === 1 ? "turn" : "turns"}
-                    {s.tokens ? ` · ${fmt.compact(s.tokens)}` : ""}
-                  </span>
-                </div>
-                <div className="mt-1 text-[10.5px] text-muted-foreground opacity-80">
-                  {new Date(s.end).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}
-                </div>
-              </button>
-            );
-          })}
-          {filtered.length > visible.length && (
-            <div className="py-3 text-center text-[11.5px] text-muted-foreground">
-              {fmt.int(visible.length)} of {fmt.int(filtered.length)} sessions · search to narrow
-            </div>
-          )}
-          {!filtered.length && <div className="py-6 text-center text-[12px] text-muted-foreground">No sessions found.</div>}
-        </div>
-      </div>
-
-      {active ? (
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <h2 className="truncate text-[16px] font-bold text-foreground">{active.project}</h2>
-            <div className="truncate font-mono text-[11.5px] text-muted-foreground">{active.id}</div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <StatCard icon="cost" label="Cost" value={active.tokens ? fmt.usd(active.cost) : "—"} sub={active.tokens ? "estimated spend" : "no local tokens"} />
-            <StatCard icon="tokens" label="Tokens" value={fmt.compact(active.tokens)} sub="total tokens" />
-            <StatCard icon="sessions" label="Turns" value={fmt.int(active.requests)} sub="API requests" />
-            <StatCard icon="models" label="Model" value={fmt.modelShort(active.model)} sub="last used" />
-          </div>
-
-          <Panel title="Context growth over turns" hint="hover for details">
-            <ContextGrowthChart session={active} />
-          </Panel>
-
-          <Panel title="Turns breakdown" hint={`${fmt.int(turns.length)} rows · ${fmt.int(active.requests)} requests`}>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[500px] border-collapse text-left text-[12px]">
-                <thead>
-                  <tr className="border-b border-border/60 font-medium text-muted-foreground">
-                    <th className="py-2.5 font-semibold">#</th>
-                    <th className="py-2.5 font-semibold">Time</th>
-                    <th className="py-2.5 font-semibold">Model</th>
-                    <th className="py-2.5 text-right font-semibold">Reqs</th>
-                    <th className="py-2.5 text-right font-semibold">Input</th>
-                    <th className="py-2.5 text-right font-semibold">Output</th>
-                    <th className="py-2.5 text-right font-semibold">Cache Cr</th>
-                    <th className="py-2.5 text-right font-semibold">Cache Rd</th>
-                    <th className="py-2.5 text-right font-semibold">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {turns.map((e, i) => (
-                    <tr key={i} className="border-b border-border/30 hover:bg-muted/10">
-                      <td className="py-2.5 font-mono text-muted-foreground">{i + 1}</td>
-                      <td className="py-2.5 text-muted-foreground">
-                        {new Date(e.t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                      </td>
-                      <td className="max-w-[120px] truncate py-2.5 font-medium">{fmt.modelShort(e.model)}</td>
-                      <td className="py-2.5 text-right font-mono tnum">{fmt.int(e.n ?? 1)}</td>
-                      <td className="py-2.5 text-right font-mono tnum">{fmt.int(e.input)}</td>
-                      <td className="py-2.5 text-right font-mono tnum">{fmt.int(e.output)}</td>
-                      <td className="py-2.5 text-right font-mono tnum text-muted-foreground">
-                        {e.cacheWrite > 0 ? fmt.int(e.cacheWrite) : "-"}
-                      </td>
-                      <td className="py-2.5 text-right font-mono tnum text-muted-foreground">
-                        {e.cacheRead > 0 ? fmt.int(e.cacheRead) : "-"}
-                      </td>
-                      <td className="py-2.5 text-right font-mono tnum font-semibold text-brand">{e.input + e.output + e.cacheWrite + e.cacheRead ? fmt.usd(e.cost) : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {!showAll && active.entries.length > turns.length && (
-              <button
-                onClick={() => setExpanded(active.id)}
-                className="mt-3 w-full rounded-lg bg-muted/50 py-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                Show all {fmt.int(active.entries.length)} rows
+    <div className="session-layout">
+      <aside className="session-sidebar" aria-label="Session browser">
+        <div className="session-controls">
+          <div className="session-search">
+            <Glyph name="search" size={14} />
+            <input
+              aria-label="Search sessions"
+              placeholder="Search sessions..."
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+              }}
+            />
+            {query && (
+              <button aria-label="Clear session search" onClick={() => setQuery("")}>
+                <Glyph name="close" size={12} />
               </button>
             )}
+          </div>
+          <Choice label="Sort sessions" value={sort} onChange={setSort} options={sortOptions} />
+          <p className="session-count" aria-live="polite">
+            {fmt.int(filtered.length)} {filtered.length === 1 ? "session" : "sessions"}
+          </p>
+        </div>
+        <div className="session-list" aria-busy={search !== query.trim().toLowerCase()}>
+          <ExpandableList key={`${search}:${sort}`} items={filtered}>
+            {(visible) => (
+              <div className="session-items">
+                {visible.map((session) => (
+                  <button
+                    key={session.key}
+                    className={`session-item ${session.key === active?.key ? "active" : ""}`}
+                    aria-current={session.key === active?.key ? "true" : undefined}
+                    onClick={() => {
+                      setSelected(session.key);
+                    }}
+                  >
+                    <strong>
+                      <span title={session.first.project}>{session.first.project}</span>
+                      <b>{session.hasCost ? fmt.cost(session.sum.totals) : "Unavailable"}</b>
+                    </strong>
+                    <code title={session.first.session}>{session.first.session}</code>
+                    <span className="session-item-meta">
+                      <span>{sourceLabel(session.first.source)}</span>
+                      <span>
+                        {fmt.int(session.sum.count)} {session.sum.count === 1 ? "request" : "requests"}
+                      </span>
+                    </span>
+                    <small>{new Date(session.last.t).toLocaleString()}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </ExpandableList>
+        </div>
+      </aside>
+      {active ? (
+        <div className="view-stack session-detail">
+          <div className="session-heading">
+            <h2>{active.first.project}</h2>
+            <p className="note">
+              <span>{sourceLabel(active.first.source)}</span>
+              <code title={active.first.session}>{active.first.session}</code>
+            </p>
+            <Metadata
+              items={[
+                { label: "Started", value: new Date(active.first.t).toLocaleString() },
+                { label: "Last activity", value: new Date(active.last.t).toLocaleString() }
+              ]}
+            />
+          </div>
+          <div className="stats-grid">
+            <Stat label="Cost" value={active.hasCost ? fmt.cost(active.sum.totals) : "Unavailable"} />
+            <Stat
+              label="Tokens"
+              value={active.sum.totals.tokens ? fmt.compact(active.sum.totals.tokens) : "Unavailable"}
+            />
+            <Stat label="Requests" value={fmt.int(active.sum.count)} />
+            <Stat label="Last model" value={fmt.modelShort(active.last.model)} />
+          </div>
+          <Panel title="Input volume" hint="Input and cache per minute">
+            {active.sum.totals.tokens ? (
+              <ContextChart entries={active.records} />
+            ) : (
+              <p className="note">This session history does not include token counts.</p>
+            )}
+          </Panel>
+          <Panel
+            title="Usage records"
+            hint={
+              <Choice
+                label="Sort usage records"
+                value={recordSort}
+                onChange={setRecordSort}
+                options={[
+                  { value: "tokens", label: "Most tokens" },
+                  { value: "cost", label: "Highest cost" },
+                  { value: "recent", label: "Most recent" }
+                ]}
+              />
+            }
+          >
+            <div className="record-count">
+              <Metadata
+                items={[
+                  { label: "Minute/model buckets", value: fmt.int(active.records.length) },
+                  { label: "Requests", value: fmt.int(active.sum.count) }
+                ]}
+              />
+            </div>
+            <ExpandableList key={`${active.key}:${recordSort}`} items={records}>
+              {(visible) => (
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        {["Time", "Model", "Requests", "Input", "Output", "Cache write", "Cache read", "Cost"].map(
+                          (label) => (
+                            <th key={label}>{label}</th>
+                          )
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visible.map((entry, index) => (
+                        <tr key={index}>
+                          <td title={new Date(entry.t).toLocaleString()}>
+                            {new Date(entry.t).toLocaleString([], {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit"
+                            })}
+                          </td>
+                          <td title={entry.model}>
+                            {fmt.modelShort(entry.model)}
+                            {entry.speed && entry.speed !== "standard" && (
+                              <small className="speed-label">{entry.speed}</small>
+                            )}
+                          </td>
+                          <td>{entry.n || 1}</td>
+                          <td>{fmt.int(entry.input)}</td>
+                          <td>{fmt.int(entry.output)}</td>
+                          <td>{fmt.int(entry.cacheWrite)}</td>
+                          <td>{fmt.int(entry.cacheRead)}</td>
+                          <td>{fmt.cost(entry)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </ExpandableList>
           </Panel>
         </div>
       ) : (
-        <div className="grid h-[50vh] place-items-center text-center text-muted-foreground">
-          Select a session to view detailed context growth and cost breakdown.
-        </div>
+        <Empty title="No matching sessions">Try a different search.</Empty>
       )}
     </div>
   );
