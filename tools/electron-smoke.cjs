@@ -10,7 +10,6 @@ nativeTheme.themeSource = "dark";
 const errors = [];
 app.on("browser-window-created", (_event, window) => {
   window.webContents.setBackgroundThrottling(false);
-  window.webContents.setZoomFactor(Math.min(1, window.getContentSize()[0] / 1280));
   let quota = require("../test/limits-fixture.cjs").limitsFixture();
   const resetRequests = [];
   let delayedQuota = false;
@@ -81,6 +80,8 @@ app.on("browser-window-created", (_event, window) => {
       await waitFor(`!document.querySelector('.choice-popup')`);
     }
     try {
+      window.webContents.setZoomFactor(Math.min(1, window.getContentSize()[0] / 1280));
+      await waitFor(`innerWidth >= 1200`);
       await waitFor(`document.querySelector('.stats-grid') && !document.querySelector('.scan-progress')`);
       await waitFor(`document.querySelector('.brand-mark')?.naturalWidth > 0`);
       const probe = "cinder-smoke-console-probe";
