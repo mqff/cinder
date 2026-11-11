@@ -1,7 +1,7 @@
 {
   "name": "cinder",
   "productName": "Cinder",
-  "version": "3.4.2",
+  "version": "3.4.3",
   "private": true,
   "author": "Cinder",
   "license": "MIT",
@@ -33,6 +33,7 @@
     "smoke": "node tools/smoke.js",
     "smoke:large": "node tools/smoke.js --large",
     "smoke:package": "node tools/smoke.js --package",
+    "smoke:native": "node tools/smoke-native.js",
     "build:win": "node tools/build.js win",
     "build:mac": "node tools/build.js mac",
     "format": "prettier --write .",
@@ -65,7 +66,6 @@
     "productName": "Cinder",
     "copyright": "Copyright (c) 2026 Cinder",
     "forceCodeSigning": false,
-    "afterPack": "tools/after-pack.js",
     "directories": {
       "output": "release"
     },
@@ -104,7 +104,7 @@
       "icon": "icon/icon.png",
       "category": "public.app-category.developer-tools",
       "darkModeSupport": true,
-      "identity": null,
+      "identity": "-",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",

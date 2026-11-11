@@ -14,12 +14,12 @@ Get the installers from the [latest release](https://github.com/mydd7/cinder/rel
 | macOS, Apple silicon | `Cinder-<version>-arm64.dmg` |
 | macOS, Intel         | `Cinder-<version>-x64.dmg`   |
 
-Installers are built by GitHub Actions. They are unsigned; macOS builds are not notarized.
+Installers are built by GitHub Actions. Windows installers are unsigned. macOS apps are ad-hoc signed and are not notarized.
 
-macOS builds are ad-hoc signed, not notarized. If macOS refuses to open Cinder after you drag it to Applications, clear the download quarantine once:
+On macOS, copy Cinder to Applications. If Gatekeeper blocks it, you can remove the download quarantine after checking the release's SHA-256 checksum:
 
 ```bash
-xattr -cr /Applications/Cinder.app
+xattr -dr com.apple.quarantine /Applications/Cinder.app
 ```
 
 ## Features

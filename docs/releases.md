@@ -9,7 +9,9 @@ Public installers are built by `.github/workflows/release.yml`. Local build outp
 3. Run verification and push the changes to `master`.
 4. Run **Release** from GitHub Actions, or push the matching `v<version>` tag.
 
-The workflow checks that the version, tag and release notes agree. Windows builds the x64 EXE. macOS builds arm64 and x64 DMGs. Both jobs run source and packaged smoke tests.
+The workflow checks that the version, tag and release notes agree. Windows builds the x64 EXE. Separate Apple silicon and Intel runners build their matching DMGs. Every build runs source, archive and native launch checks.
+
+The macOS checks mount the DMG, copy its app, verify the signature and architecture, then launch that copy. The Windows check launches the unpacked executable. Both check a fixture scan, worker processes and navigation.
 
 After both builds pass, a publish job downloads their artifacts, checks the filenames and creates `SHA256SUMS.txt`. It uploads everything to a draft, then publishes the release. The tag points to the exact source commit used by the workflow.
 
@@ -21,4 +23,6 @@ If source changes are needed after a tag has been created, use a new version and
 
 ## Signing
 
-Windows signing and macOS signing/notarization are not configured. Releases state this explicitly. Manual install and upgrade checks should use the downloaded installers on their target systems.
+Windows installers are unsigned. macOS apps use electron-builder's ad-hoc signing with `mac.identity: "-"`. They have no Developer ID signature and are not notarized, so Gatekeeper can still block downloads. See the [macOS instructions](../README.md#download).
+
+Manual install and upgrade checks should use the downloaded installers on their target systems.

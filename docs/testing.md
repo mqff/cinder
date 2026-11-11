@@ -24,6 +24,8 @@ npm run smoke:package -- --large
 
 Packaging compares the ASAR contents with the current source and renderer, checks the version and verifies the unpacked SQLite helper. Packaged smoke loads that archive through the development Electron executable. Fresh installation and upgrades need separate manual testing.
 
+`npm run smoke:native` runs on isolated CI runners. On macOS it mounts the host architecture's DMG, copies the app and checks its signature before launching the packaged executable. On Windows it launches the unpacked executable. It checks a synthetic scan, usage and calls workers, navigation and a screenshot through a temporary local debugging connection. No test hook is included in the shipped app.
+
 ## Local diagnostics
 
 `npm run diagnose` reads local history and reports counts, warnings and aggregation timings. `npm run diagnose:limits` checks real provider quotas. Add `-- --cursor-usage` to read seven days of Cursor billing too.
@@ -32,4 +34,4 @@ Diagnostic files stay in `artifacts/`. They omit conversation contents and crede
 
 ## CI
 
-GitHub Actions runs verification and smoke tests on Windows, macOS and Linux. Release builds run on Windows and macOS, then check their packaged archives before publication. Installers are unsigned, and provider format changes can still require reader updates.
+GitHub Actions runs verification and smoke tests on Windows, Linux, Apple silicon and Intel Macs. macOS pull requests also build and launch their DMGs. Release builds check their archives and launch their native executables before publication. Windows installers are unsigned; macOS apps are ad-hoc signed without notarization. Provider format changes can still require reader updates.

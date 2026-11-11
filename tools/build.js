@@ -6,6 +6,9 @@ const root = path.resolve(__dirname, "..");
 const target = process.argv[2] || "host";
 const targets = { host: [], win: ["--win"], mac: ["--mac"], dir: ["--dir"] };
 if (!Object.hasOwn(targets, target)) throw new Error(`Unknown build target: ${target}`);
+const architecture = process.argv[3];
+if (architecture && (target !== "mac" || !["--arm64", "--x64"].includes(architecture)))
+  throw new Error(`Unsupported build architecture: ${architecture}`);
 
 async function build() {
   cleanOutputs(root, ["release", "dist"]);
@@ -13,11 +16,15 @@ async function build() {
   await vite.build();
   const packagePath = require.resolve("electron-builder/package.json");
   const cli = path.join(path.dirname(packagePath), require(packagePath).bin["electron-builder"]);
-  const result = spawnSync(process.execPath, [cli, ...targets[target], "--publish", "never"], {
-    cwd: root,
-    stdio: "inherit",
-    windowsHide: true
-  });
+  const result = spawnSync(
+    process.execPath,
+    [cli, ...targets[target], ...(architecture ? ["dmg", architecture] : []), "--publish", "never"],
+    {
+      cwd: root,
+      stdio: "inherit",
+      windowsHide: true
+    }
+  );
   if (result.error) throw result.error;
   if (result.status === 0) require("./verify-package").verifyPackage(root);
   process.exitCode = result.status ?? 1;

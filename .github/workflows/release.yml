@@ -54,8 +54,12 @@ jobs:
             artifact: installers-windows
             path: release/Cinder-Setup-*.exe
           - os: macos-latest
-            command: build:mac
-            artifact: installers-macos
+            command: build:mac -- --arm64
+            artifact: installers-macos-arm64
+            path: release/*.dmg
+          - os: macos-15-intel
+            command: build:mac -- --x64
+            artifact: installers-macos-x64
             path: release/*.dmg
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -74,6 +78,7 @@ jobs:
       - run: npm run smoke
       - run: npm run ${{ matrix.command }}
       - run: npm run smoke:package
+      - run: npm run smoke:native
       - if: runner.os == 'Windows'
         run: npm run smoke:package -- --large
       - uses: actions/upload-artifact@v7
@@ -86,7 +91,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: release-checks-${{ runner.os }}
+          name: release-checks-${{ runner.os }}-${{ runner.arch }}
           path: artifacts/
           if-no-files-found: ignore
           retention-days: 7
