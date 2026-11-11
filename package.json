@@ -65,6 +65,7 @@
     "productName": "Cinder",
     "copyright": "Copyright (c) 2026 Cinder",
     "forceCodeSigning": false,
+    "afterPack": "tools/after-pack.js",
     "directories": {
       "output": "release"
     },

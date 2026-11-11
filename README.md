@@ -16,6 +16,12 @@ Get the installers from the [latest release](https://github.com/mydd7/cinder/rel
 
 Installers are built by GitHub Actions. They are unsigned; macOS builds are not notarized.
 
+macOS builds are ad-hoc signed, not notarized. If macOS refuses to open Cinder after you drag it to Applications, clear the download quarantine once:
+
+```bash
+xattr -cr /Applications/Cinder.app
+```
+
 ## Features
 
 - Usage by tool, model, project and session, with hourly charts for Today.
