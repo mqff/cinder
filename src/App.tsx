@@ -73,7 +73,7 @@ export function App() {
     function onKey(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey)) return;
       const modalOpen = !!document.querySelector("dialog[open]");
-      if (event.altKey && event.key.toLowerCase() === "a") {
+      if (event.altKey && (event.code === "KeyA" || event.key.toLowerCase() === "a")) {
         event.preventDefault();
         if (modalOpen) return;
         if (event.shiftKey)
